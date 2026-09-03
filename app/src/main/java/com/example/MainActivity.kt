@@ -14,6 +14,8 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.lifecycle.lifecycleScope
+import androidx.navigation.NavType
+import androidx.navigation.navArgument
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
@@ -109,14 +111,28 @@ fun DevVaultApp() {
             val externalRoot = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
                 if (android.os.Environment.isExternalStorageManager()) {
                     android.os.Environment.getExternalStorageDirectory()
-                } else context.filesDir
+                } else {
+                    context.getExternalFilesDir(null) ?: context.filesDir
+                }
             } else {
                 android.os.Environment.getExternalStorageDirectory()
             }
             FileManagerScreen(onBack = { navController.popBackStack() }, rootDir = externalRoot, onNavigateToEditor = { path -> navController.navigate("code_editor?filePath=${android.net.Uri.encode(path)}") }) 
         }
-        composable("code_editor?filePath={filePath}") { backStackEntry ->
-            val filePath = backStackEntry.arguments?.getString("filePath") 
+        composable(
+            route = "code_editor?filePath={filePath}",
+            arguments = listOf(
+                navArgument("filePath") {
+                    type = NavType.StringType
+                    nullable = true
+                    defaultValue = null
+                }
+            )
+        ) { backStackEntry ->
+            val rawFilePath = backStackEntry.arguments?.getString("filePath") 
+            val filePath = rawFilePath?.let {
+                try { android.net.Uri.decode(it) } catch (e: Exception) { it }
+            }
             val context = androidx.compose.ui.platform.LocalContext.current
             CodeEditorScreen(onBack = { navController.popBackStack() }, filesDir = context.filesDir, initialFilePath = filePath) 
         }

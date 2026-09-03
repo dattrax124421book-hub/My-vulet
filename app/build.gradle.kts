@@ -110,7 +110,7 @@ dependencies {
   implementation("androidx.documentfile:documentfile:1.0.1")
   implementation("com.google.mlkit:text-recognition:16.0.0")
   implementation("com.tom-roush:pdfbox-android:2.0.27.0")
-  // implementation(libs.coil.compose)
+  implementation(libs.coil.compose)
   
   implementation(libs.kotlinx.coroutines.android)
   implementation(libs.kotlinx.coroutines.core)

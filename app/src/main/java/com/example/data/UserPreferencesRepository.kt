@@ -25,6 +25,8 @@ class UserPreferencesRepository(private val context: Context) {
         val EDITOR_DIAGNOSTICS_AUTO = booleanPreferencesKey("editor_diagnostics_auto")
         val DEFAULT_EXPORT_URI = stringPreferencesKey("default_export_uri")
         val CONFIRM_DESTRUCTIVE = booleanPreferencesKey("confirm_destructive")
+        val FILE_FAVORITES = stringSetPreferencesKey("file_favorites")
+        val SHOW_HIDDEN_FILES = booleanPreferencesKey("show_hidden_files")
     }
 
     val userPreferencesFlow: Flow<UserPreferences> = context.dataStore.data.map { preferences ->
@@ -41,8 +43,25 @@ class UserPreferencesRepository(private val context: Context) {
             editorAutosaveInterval = preferences[EDITOR_AUTOSAVE_INTERVAL] ?: 15000L,
             editorDiagnosticsAuto = preferences[EDITOR_DIAGNOSTICS_AUTO] ?: true,
             defaultExportUri = preferences[DEFAULT_EXPORT_URI] ?: "",
-            confirmDestructive = preferences[CONFIRM_DESTRUCTIVE] ?: true
+            confirmDestructive = preferences[CONFIRM_DESTRUCTIVE] ?: true,
+            fileFavorites = preferences[FILE_FAVORITES] ?: emptySet(),
+            showHiddenFiles = preferences[SHOW_HIDDEN_FILES] ?: false
         )
+    }
+
+    suspend fun toggleFavorite(path: String) {
+        context.dataStore.edit { prefs ->
+            val current = prefs[FILE_FAVORITES] ?: emptySet()
+            if (current.contains(path)) {
+                prefs[FILE_FAVORITES] = current - path
+            } else {
+                prefs[FILE_FAVORITES] = current + path
+            }
+        }
+    }
+
+    suspend fun setShowHiddenFiles(show: Boolean) {
+        context.dataStore.edit { it[SHOW_HIDDEN_FILES] = show }
     }
 
     suspend fun updateTheme(theme: String) {
@@ -111,5 +130,7 @@ data class UserPreferences(
     val editorAutosaveInterval: Long,
     val editorDiagnosticsAuto: Boolean,
     val defaultExportUri: String,
-    val confirmDestructive: Boolean
+    val confirmDestructive: Boolean,
+    val fileFavorites: Set<String> = emptySet(),
+    val showHiddenFiles: Boolean = false
 )

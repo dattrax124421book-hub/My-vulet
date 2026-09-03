@@ -114,11 +114,49 @@ class CodeEditorViewModel : ViewModel() {
     }
 
     fun addTab(file: File? = null) {
-        val name = file?.name ?: "untitled-${_tabs.value.size}.txt"
-        val text = file?.readText() ?: ""
+        if (file != null) {
+            val existingIndex = _tabs.value.indexOfFirst { it.file?.absolutePath == file.absolutePath }
+            if (existingIndex >= 0) {
+                switchTab(existingIndex)
+                return
+            }
+        }
+
+        val name = file?.name ?: "untitled-${_tabs.value.size + 1}.txt"
+        val text = try {
+            if (file == null || !file.exists() || !file.canRead() || file.isDirectory) {
+                ""
+            } else if (file.length() > 2 * 1024 * 1024) { // > 2MB safe truncation
+                file.inputStream().bufferedReader(Charsets.UTF_8).use { reader ->
+                    val buffer = CharArray(150 * 1024)
+                    val read = reader.read(buffer, 0, buffer.size)
+                    if (read > 0) String(buffer, 0, read) + "\n\n--- [Preview Truncated: File exceeds 2MB] ---"
+                    else ""
+                }
+            } else {
+                try {
+                    file.readText(Charsets.UTF_8)
+                } catch (e: Exception) {
+                    file.readText(Charsets.ISO_8859_1)
+                }
+            }
+        } catch (t: Throwable) {
+            "/* Error reading file as text: ${t.localizedMessage ?: "Unsupported or inaccessible file"} */"
+        }
         val newTab = EditorTab(file = file, name = name, content = TextFieldValue(text))
-        _tabs.value = _tabs.value + newTab
-        _currentTabIndex.value = _tabs.value.lastIndex
+        
+        // If current only tab is clean empty untitled, replace it
+        if (_tabs.value.size == 1 && _tabs.value[0].file == null && _tabs.value[0].content.text.isEmpty() && !_tabs.value[0].isModified) {
+            _tabs.value = listOf(newTab)
+            _currentTabIndex.value = 0
+        } else {
+            _tabs.value = _tabs.value + newTab
+            _currentTabIndex.value = _tabs.value.lastIndex
+        }
+
+        if (isAutoDiagnosticsEnabled) {
+            runDiagnostics(newTab.content.text, newTab.name)
+        }
     }
     
     fun switchTab(index: Int) {
@@ -141,23 +179,82 @@ class CodeEditorViewModel : ViewModel() {
             if (_currentTabIndex.value >= newTabs.size) {
                 _currentTabIndex.value = newTabs.lastIndex
             }
+        } else {
+            // Reset the single tab to a clean untitled state
+            _tabs.value = listOf(EditorTab())
+            _currentTabIndex.value = 0
+            _diagnostics.value = "Ready"
         }
     }
 
-    fun saveCurrentFile(filesDir: File): Boolean {
+    fun saveCurrentFile(fallbackDir: File): Boolean {
         val index = _currentTabIndex.value
-        val tab = _tabs.value[index]
+        val tab = _tabs.value.getOrNull(index) ?: return false
         return try {
-            val file = tab.file ?: File(filesDir, tab.name)
-            file.writeText(tab.content.text)
+            val file = tab.file ?: File(fallbackDir, tab.name)
+            file.parentFile?.mkdirs()
+            file.writeText(tab.content.text, Charsets.UTF_8)
             
             val newTabs = _tabs.value.toMutableList()
-            newTabs[index] = tab.copy(file = file, isModified = false)
+            newTabs[index] = tab.copy(file = file, name = file.name, isModified = false)
             _tabs.value = newTabs
             true
         } catch (e: Exception) {
             e.printStackTrace()
             false
+        }
+    }
+
+    fun saveFileAs(fileName: String, targetDir: File): Boolean {
+        val index = _currentTabIndex.value
+        val tab = _tabs.value.getOrNull(index) ?: return false
+        val trimmed = fileName.trim()
+        if (trimmed.isEmpty()) return false
+        return try {
+            targetDir.mkdirs()
+            val file = File(targetDir, trimmed)
+            file.writeText(tab.content.text, Charsets.UTF_8)
+
+            val newTabs = _tabs.value.toMutableList()
+            newTabs[index] = tab.copy(file = file, name = file.name, isModified = false)
+            _tabs.value = newTabs
+            true
+        } catch (e: Exception) {
+            e.printStackTrace()
+            false
+        }
+    }
+
+    fun canUndo(): Boolean {
+        val tab = _tabs.value.getOrNull(_currentTabIndex.value) ?: return false
+        return tab.undoStack.isNotEmpty()
+    }
+
+    fun canRedo(): Boolean {
+        val tab = _tabs.value.getOrNull(_currentTabIndex.value) ?: return false
+        return tab.redoStack.isNotEmpty()
+    }
+
+    fun getDetectedLanguage(name: String): String {
+        val ext = name.substringAfterLast('.', "").lowercase()
+        return when (ext) {
+            "kt", "kts" -> "Kotlin"
+            "java" -> "Java"
+            "json" -> "JSON"
+            "xml" -> "XML"
+            "html", "htm" -> "HTML"
+            "css" -> "CSS"
+            "js" -> "JavaScript"
+            "ts" -> "TypeScript"
+            "py" -> "Python"
+            "sh", "bash" -> "Shell"
+            "c", "h" -> "C"
+            "cpp", "hpp" -> "C++"
+            "sql" -> "SQL"
+            "md" -> "Markdown"
+            "yaml", "yml" -> "YAML"
+            "txt" -> "Plain Text"
+            else -> if (ext.isNotEmpty()) ext.uppercase() else "Plain Text"
         }
     }
     
