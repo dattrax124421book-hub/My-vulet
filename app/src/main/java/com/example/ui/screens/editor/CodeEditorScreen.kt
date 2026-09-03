@@ -43,6 +43,7 @@ fun CodeEditorScreen(
     val tabs by viewModel.tabs.collectAsState()
     val currentIndex by viewModel.currentTabIndex.collectAsState()
     val diagnostics by viewModel.diagnostics.collectAsState()
+    val diagnosticIssues by viewModel.diagnosticIssues.collectAsState()
     val context = LocalContext.current
 
     // UI state
@@ -50,6 +51,7 @@ fun CodeEditorScreen(
     var showGoToLine by remember { mutableStateOf(false) }
     var showSaveAsDialog by remember { mutableStateOf(false) }
     var showUnsavedDialog by remember { mutableStateOf(false) }
+    var showDiagnosticsSheet by remember { mutableStateOf(false) }
     var showMenu by remember { mutableStateOf(false) }
     var wordWrap by remember { mutableStateOf(false) }
 
@@ -285,6 +287,39 @@ fun CodeEditorScreen(
                     }
                 }
 
+                // Quick Coding Symbols Toolbar
+                val quickSymbols = listOf("    ", "{", "}", "(", ")", "[", "]", "\"", "'", ";", ":", "=", "+", "-", "*", "/", "<", ">", "->", "=>", "//")
+                val symbolHScroll = rememberScrollState()
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
+                        .horizontalScroll(symbolHScroll)
+                        .padding(horizontal = 8.dp, vertical = 4.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    quickSymbols.forEach { sym ->
+                        Surface(
+                            shape = RoundedCornerShape(4.dp),
+                            color = MaterialTheme.colorScheme.surface,
+                            tonalElevation = 1.dp,
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(4.dp))
+                                .clickable {
+                                    viewModel.insertSymbol(sym)
+                                }
+                        ) {
+                            Text(
+                                text = if (sym == "    ") "Tab ⇥" else sym,
+                                style = TextStyle(fontFamily = FontFamily.Monospace, fontSize = 12.sp),
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                        }
+                    }
+                }
+
                 // Find & Replace Expandable Panel
                 if (showFindReplace) {
                     Surface(
@@ -432,9 +467,12 @@ fun CodeEditorScreen(
             }
         },
         bottomBar = {
+            val errorCount = diagnosticIssues.count { it.isError }
+            val warningCount = diagnosticIssues.count { !it.isError }
+            
             Surface(
                 tonalElevation = 2.dp,
-                modifier = Modifier.fillMaxWidth().height(40.dp)
+                modifier = Modifier.fillMaxWidth().height(42.dp)
             ) {
                 Row(
                     modifier = Modifier
@@ -463,14 +501,53 @@ fun CodeEditorScreen(
                             style = TextStyle(fontFamily = FontFamily.Monospace, fontSize = 11.sp),
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
-                        if (diagnostics.isNotBlank()) {
-                            Text(
-                                text = "• $diagnostics",
-                                style = TextStyle(fontFamily = FontFamily.Monospace, fontSize = 11.sp),
-                                color = if (diagnostics.contains("Error", ignoreCase = true)) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
+
+                        // Clickable diagnostic badge
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            color = when {
+                                errorCount > 0 -> MaterialTheme.colorScheme.errorContainer
+                                warningCount > 0 -> MaterialTheme.colorScheme.tertiaryContainer
+                                else -> MaterialTheme.colorScheme.surfaceVariant
+                            },
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(12.dp))
+                                .clickable { showDiagnosticsSheet = true }
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                            ) {
+                                Icon(
+                                    imageVector = when {
+                                        errorCount > 0 -> Icons.Default.Error
+                                        warningCount > 0 -> Icons.Default.Warning
+                                        else -> Icons.Default.CheckCircle
+                                    },
+                                    contentDescription = "Diagnostics",
+                                    modifier = Modifier.size(13.dp),
+                                    tint = when {
+                                        errorCount > 0 -> MaterialTheme.colorScheme.error
+                                        warningCount > 0 -> MaterialTheme.colorScheme.tertiary
+                                        else -> MaterialTheme.colorScheme.primary
+                                    }
+                                )
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text(
+                                    text = when {
+                                        errorCount > 0 && warningCount > 0 -> "$errorCount 🔴 $warningCount 🟡"
+                                        errorCount > 0 -> "$errorCount err"
+                                        warningCount > 0 -> "$warningCount warn"
+                                        else -> "Clean"
+                                    },
+                                    style = TextStyle(fontFamily = FontFamily.Monospace, fontSize = 10.sp),
+                                    color = when {
+                                        errorCount > 0 -> MaterialTheme.colorScheme.onErrorContainer
+                                        warningCount > 0 -> MaterialTheme.colorScheme.onTertiaryContainer
+                                        else -> MaterialTheme.colorScheme.onSurfaceVariant
+                                    }
+                                )
+                            }
                         }
                     }
                 }
@@ -493,20 +570,48 @@ fun CodeEditorScreen(
             Column(
                 modifier = Modifier
                     .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f))
-                    .padding(vertical = 12.dp, horizontal = 10.dp),
+                    .padding(vertical = 12.dp, horizontal = 8.dp),
                 horizontalAlignment = Alignment.End
             ) {
                 for (i in 1..totalLines) {
-                    Text(
-                        text = i.toString(),
-                        style = TextStyle(
-                            fontFamily = FontFamily.Monospace,
-                            fontSize = 13.sp,
-                            lineHeight = 20.sp
-                        ),
-                        color = if (i == currentLineNumber) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant,
-                        modifier = Modifier.padding(vertical = 1.dp)
-                    )
+                    val lineHasError = diagnosticIssues.any { it.line == i && it.isError }
+                    val lineHasWarning = !lineHasError && diagnosticIssues.any { it.line == i && !it.isError }
+
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier
+                            .padding(vertical = 1.dp)
+                            .clip(RoundedCornerShape(3.dp))
+                            .clickable {
+                                viewModel.jumpToLine(i)
+                            }
+                    ) {
+                        if (lineHasError) {
+                            Box(
+                                modifier = Modifier
+                                    .size(6.dp)
+                                    .background(MaterialTheme.colorScheme.error, RoundedCornerShape(3.dp))
+                            )
+                            Spacer(Modifier.width(3.dp))
+                        } else if (lineHasWarning) {
+                            Box(
+                                modifier = Modifier
+                                    .size(6.dp)
+                                    .background(Color(0xFFE5A100), RoundedCornerShape(3.dp))
+                            )
+                            Spacer(Modifier.width(3.dp))
+                        }
+
+                        Text(
+                            text = i.toString(),
+                            style = TextStyle(
+                                fontFamily = FontFamily.Monospace,
+                                fontSize = 13.sp,
+                                lineHeight = 20.sp
+                            ),
+                            color = if (i == currentLineNumber) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant
+                        )
+                    }
                 }
             }
 
@@ -532,7 +637,8 @@ fun CodeEditorScreen(
                 BasicTextField(
                     value = currentTab.content,
                     onValueChange = { newTextValue ->
-                        viewModel.updateContent(newTextValue)
+                        val autoIndented = viewModel.handleTextChangeWithAutoIndent(newTextValue)
+                        viewModel.updateContent(autoIndented)
                     },
                     textStyle = TextStyle(
                         fontFamily = FontFamily.Monospace,
@@ -548,6 +654,91 @@ fun CodeEditorScreen(
                     modifier = Modifier.fillMaxWidth()
                 )
             }
+        }
+
+        // Diagnostics Dialog / BottomSheet
+        if (showDiagnosticsSheet) {
+            AlertDialog(
+                onDismissRequest = { showDiagnosticsSheet = false },
+                title = {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text("Diagnostics (${diagnosticIssues.size})")
+                        IconButton(onClick = { viewModel.manualRecheck() }) {
+                            Icon(Icons.Default.Refresh, contentDescription = "Recheck")
+                        }
+                    }
+                },
+                text = {
+                    if (diagnosticIssues.isEmpty()) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.padding(vertical = 16.dp)
+                        ) {
+                            Icon(Icons.Default.CheckCircle, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                            Spacer(Modifier.width(8.dp))
+                            Text("No syntax errors or warnings detected.")
+                        }
+                    } else {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(max = 350.dp)
+                                .verticalScroll(rememberScrollState()),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            diagnosticIssues.forEach { issue ->
+                                Card(
+                                    colors = CardDefaults.cardColors(
+                                        containerColor = if (issue.isError) MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.6f)
+                                        else MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.6f)
+                                    ),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .clickable {
+                                            viewModel.jumpToLine(issue.line)
+                                            showDiagnosticsSheet = false
+                                        }
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(10.dp),
+                                        verticalAlignment = Alignment.Top
+                                    ) {
+                                        Icon(
+                                            imageVector = if (issue.isError) Icons.Default.Error else Icons.Default.Warning,
+                                            contentDescription = null,
+                                            tint = if (issue.isError) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.tertiary,
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                        Spacer(Modifier.width(8.dp))
+                                        Column {
+                                            Text(
+                                                text = "Line ${issue.line}, Col ${issue.column}",
+                                                style = MaterialTheme.typography.labelMedium,
+                                                color = if (issue.isError) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.tertiary
+                                            )
+                                            Text(
+                                                text = issue.message,
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = MaterialTheme.colorScheme.onSurface
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+                confirmButton = {
+                    TextButton(onClick = { showDiagnosticsSheet = false }) {
+                        Text("Close")
+                    }
+                }
+            )
         }
 
         // Go to line dialog

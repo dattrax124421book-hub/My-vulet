@@ -12,9 +12,13 @@ import kotlinx.coroutines.launch
 
 class SettingsViewModel(application: Application) : AndroidViewModel(application) {
     private val repository = UserPreferencesRepository(application)
+    private val securityAuthManager = com.example.security.SecurityAuthManager(application)
 
     val userPreferences: StateFlow<UserPreferences?> = repository.userPreferencesFlow
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
+
+    fun hasSecurityPin(): Boolean = securityAuthManager.hasPin()
+    fun verifySecurityPin(pin: String): Boolean = securityAuthManager.verifyPin(pin)
 
     fun updateTheme(theme: String) = viewModelScope.launch { repository.updateTheme(theme) }
     fun updateVaultLockTimeout(timeout: Long) = viewModelScope.launch { repository.updateVaultLockTimeout(timeout) }

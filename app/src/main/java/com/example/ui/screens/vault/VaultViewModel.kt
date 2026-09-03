@@ -4,49 +4,30 @@ import android.app.Application
 import android.content.Context
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
-import androidx.security.crypto.EncryptedSharedPreferences
-import androidx.security.crypto.MasterKey
 import com.example.data.AppDatabase
 import com.example.data.VaultItem
+import com.example.security.SecurityAuthManager
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
-import java.security.SecureRandom
-import javax.crypto.SecretKeyFactory
-import javax.crypto.spec.PBEKeySpec
-import android.util.Base64
+import java.io.File
 
 class VaultViewModel(application: Application) : AndroidViewModel(application) {
+    private val securityAuthManager = SecurityAuthManager(application)
+
     private val _isUnlocked = MutableStateFlow(false)
     val isUnlocked: StateFlow<Boolean> = _isUnlocked.asStateFlow()
 
-    private val _hasPin = MutableStateFlow(false)
+    private val _hasPin = MutableStateFlow(securityAuthManager.hasPin())
     val hasPin: StateFlow<Boolean> = _hasPin.asStateFlow()
 
     private val dao = AppDatabase.getDatabase(application).vaultItemDao()
     val vaultItems = dao.getAllVaultItems().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
-    private val sharedPrefs by lazy {
-        val masterKey = MasterKey.Builder(application)
-            .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
-            .build()
-        EncryptedSharedPreferences.create(
-            application,
-            "vault_prefs",
-            masterKey,
-            EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
-            EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
-        )
-    }
-
     private val statePrefs = application.getSharedPreferences("vault_state", Context.MODE_PRIVATE)
-
-    init {
-        _hasPin.value = sharedPrefs.contains("vault_pin_hash")
-    }
 
     fun checkForceLock() {
         if (statePrefs.getBoolean("force_lock", false)) {
@@ -56,52 +37,41 @@ class VaultViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun setPin(pin: String) {
-        val salt = ByteArray(16)
-        SecureRandom().nextBytes(salt)
-        val hash = hashPin(pin, salt)
-        
-        sharedPrefs.edit()
-            .putString("vault_pin_hash", Base64.encodeToString(hash, Base64.DEFAULT))
-            .putString("vault_pin_salt", Base64.encodeToString(salt, Base64.DEFAULT))
-            .apply()
-            
+        securityAuthManager.setPin(pin)
         _hasPin.value = true
         _isUnlocked.value = true
     }
 
     fun unlock(pin: String): Boolean {
-        val storedHashBase64 = sharedPrefs.getString("vault_pin_hash", null)
-        val storedSaltBase64 = sharedPrefs.getString("vault_pin_salt", null)
-        
-        if (storedHashBase64 != null && storedSaltBase64 != null) {
-            val storedHash = Base64.decode(storedHashBase64, Base64.DEFAULT)
-            val salt = Base64.decode(storedSaltBase64, Base64.DEFAULT)
-            
-            val attemptedHash = hashPin(pin, salt)
-            
-            if (attemptedHash.contentEquals(storedHash)) {
-                _isUnlocked.value = true
-                return true
-            }
-        }
-        return false
-    }
-    
-    fun changePin(oldPin: String, newPin: String): Boolean {
-        if (unlock(oldPin)) {
-            setPin(newPin)
+        if (securityAuthManager.verifyPin(pin)) {
+            _isUnlocked.value = true
             return true
         }
         return false
     }
-    
+
+    fun changePin(oldPin: String, newPin: String): Boolean {
+        val success = securityAuthManager.changePin(oldPin, newPin)
+        if (success) {
+            _hasPin.value = true
+            _isUnlocked.value = true
+        }
+        return success
+    }
+
     fun resetVault() {
-        sharedPrefs.edit().clear().apply()
+        securityAuthManager.clearPin()
         _hasPin.value = false
         _isUnlocked.value = false
-        // In a real scenario we'd also clear the vault database and encrypted files
         viewModelScope.launch {
-            vaultItems.value.forEach { dao.delete(it) }
+            vaultItems.value.forEach { item ->
+                try {
+                    File(item.encryptedPath).delete()
+                } catch (e: Exception) {
+                    // ignore
+                }
+                dao.delete(item)
+            }
         }
     }
 
@@ -116,14 +86,16 @@ class VaultViewModel(application: Application) : AndroidViewModel(application) {
     fun addVaultItem(item: VaultItem) {
         viewModelScope.launch { dao.insert(item) }
     }
-    
-    fun deleteVaultItem(item: VaultItem) {
-        viewModelScope.launch { dao.delete(item) }
-    }
 
-    private fun hashPin(pin: String, salt: ByteArray): ByteArray {
-        val spec = PBEKeySpec(pin.toCharArray(), salt, 100000, 256)
-        val factory = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256")
-        return factory.generateSecret(spec).encoded
+    fun deleteVaultItem(item: VaultItem) {
+        viewModelScope.launch {
+            try {
+                File(item.encryptedPath).delete()
+            } catch (e: Exception) {
+                // ignore
+            }
+            dao.delete(item)
+        }
     }
 }
+

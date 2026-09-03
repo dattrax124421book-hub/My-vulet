@@ -690,18 +690,23 @@ class FileManagerViewModel : ViewModel() {
                 var successCount = 0
                 for (file in filesToMove) {
                     if (file.isDirectory) continue
-                    val bytes = file.readBytes()
-                    val (iv, encryptedData) = keystoreHelper.encrypt(bytes)
                     val destFile = File(vaultDir, UUID.randomUUID().toString())
-                    destFile.writeBytes(iv + encryptedData)
+                    FileInputStream(file).use { fis ->
+                        FileOutputStream(destFile).use { fos ->
+                            keystoreHelper.encryptStream(fis, fos)
+                        }
+                    }
 
-                    val (nameIv, nameEncrypted) = keystoreHelper.encrypt(file.name.toByteArray())
+                    val (nameIv, nameEncrypted) = keystoreHelper.encrypt(file.name.toByteArray(Charsets.UTF_8))
                     val encryptedNameStr = "${Base64.encodeToString(nameIv, Base64.NO_WRAP)}:${Base64.encodeToString(nameEncrypted, Base64.NO_WRAP)}"
 
                     vaultViewModel.addVaultItem(
                         VaultItem(
                             encryptedFilename = encryptedNameStr,
-                            encryptedPath = destFile.absolutePath
+                            encryptedPath = destFile.absolutePath,
+                            fileSize = file.length(),
+                            mimeType = FileUtils.getMimeType(file),
+                            timestamp = System.currentTimeMillis()
                         )
                     )
                     file.delete()
