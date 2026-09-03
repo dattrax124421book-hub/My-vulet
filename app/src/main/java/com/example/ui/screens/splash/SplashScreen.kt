@@ -81,10 +81,24 @@ fun SplashScreen(onNavigateToHome: () -> Unit) {
             confirmButton = {
                 TextButton(onClick = {
                     showManageStorageDialog = false
-                    val intent = android.content.Intent(android.provider.Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION).apply {
-                        data = android.net.Uri.parse("package:${context.packageName}")
+                    try {
+                        val intent = android.content.Intent(android.provider.Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION).apply {
+                            data = android.net.Uri.parse("package:${context.packageName}")
+                        }
+                        context.startActivity(intent)
+                    } catch (e: Exception) {
+                        try {
+                            val fallbackIntent = android.content.Intent(android.provider.Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION)
+                            context.startActivity(fallbackIntent)
+                        } catch (e2: Exception) {
+                            try {
+                                val detailsIntent = android.content.Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                                    data = android.net.Uri.parse("package:${context.packageName}")
+                                }
+                                context.startActivity(detailsIntent)
+                            } catch (_: Exception) {}
+                        }
                     }
-                    context.startActivity(intent)
                     hasHandledPermissions = true
                 }) { Text("Open Settings") }
             },

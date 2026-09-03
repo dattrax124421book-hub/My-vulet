@@ -53,12 +53,12 @@ android {
     }
     debug { 
       if (file("${rootDir}/debug.keystore").exists()) {
-        signsigningConfigingConfig = signingConfigs.getByName("debugConfig")
+        signingConfig = signingConfigs.getByName("debugConfig")
       }
     }
   }
   compileOptions {
-    ssourceCompatibilityourceCompatibility = JavaVersion.VERSION_11
+    sourceCompatibility = JavaVersion.VERSION_11
     targetCompatibility = JavaVersion.VERSION_11
   }
   buildFeatures {
@@ -69,6 +69,13 @@ android {
   dependenciesInfo {
     includeInApk = false
     includeInBundle = true
+  }
+}
+
+configurations.all {
+  resolutionStrategy {
+    force("androidx.fragment:fragment:1.8.5")
+    force("androidx.fragment:fragment-ktx:1.8.5")
   }
 }
 
@@ -98,6 +105,7 @@ dependencies {
   implementation(libs.androidx.room.ktx)
   implementation(libs.androidx.room.runtime)
   implementation(libs.androidx.biometric)
+  implementation("androidx.fragment:fragment-ktx:1.8.5")
   implementation(libs.androidx.security.crypto)
   implementation("androidx.documentfile:documentfile:1.0.1")
   implementation("com.google.mlkit:text-recognition:16.0.0")
@@ -112,6 +120,7 @@ dependencies {
   testImplementation(libs.androidx.core)
   testImplementation(libs.androidx.junit)
   testImplementation(libs.junit)
+  testImplementation("androidx.fragment:fragment-ktx:1.8.5")
   testImplementation(libs.kotlinx.coroutines.test)
   testImplementation(libs.robolectric)
   testImplementation(libs.roborazzi)
