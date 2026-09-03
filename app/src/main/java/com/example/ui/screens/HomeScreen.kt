@@ -26,6 +26,7 @@ val features = listOf(
     AppFeature("Notes", Icons.Default.Note, "notes"),
     AppFeature("Contacts", Icons.Default.Contacts, "contacts"),
     AppFeature("Vault", Icons.Default.Security, "vault"),
+    AppFeature("Extractor", androidx.compose.material.icons.Icons.Default.DocumentScanner, "extractor"),
     AppFeature("Settings", Icons.Default.Settings, "settings")
 )
 

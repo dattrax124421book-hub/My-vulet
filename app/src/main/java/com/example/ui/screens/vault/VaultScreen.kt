@@ -16,6 +16,7 @@ import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.LockOpen
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -59,6 +60,47 @@ fun VaultScreen(onBack: () -> Unit, onNavigateToCodeEditor: (String) -> Unit = {
     var biometricEnabled by remember { mutableStateOf(true) }
     
     var itemToExport by remember { mutableStateOf<VaultItem?>(null) }
+    
+    val filePickerLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) {
+            coroutineScope.launch(Dispatchers.IO) {
+                try {
+                    val inputStream = context.contentResolver.openInputStream(uri)
+                    val bytes = inputStream?.readBytes()
+                    inputStream?.close()
+                    if (bytes != null) {
+                        val originalName = androidx.documentfile.provider.DocumentFile.fromSingleUri(context, uri)?.name ?: "Unknown"
+                        val (iv, encryptedData) = KeystoreHelper().encrypt(originalName.toByteArray())
+                        val encryptedFilename = Base64.encodeToString(iv, Base64.DEFAULT) + ":" + Base64.encodeToString(encryptedData, Base64.DEFAULT)
+                        
+                        val vaultDir = File(context.filesDir, "vault_files")
+                        if (!vaultDir.exists()) {
+                            vaultDir.mkdirs()
+                            File(vaultDir, ".nomedia").createNewFile()
+                        }
+                        val newFile = File(vaultDir, java.util.UUID.randomUUID().toString())
+                        
+                        val (fileIv, fileEncryptedData) = KeystoreHelper().encrypt(bytes)
+                        newFile.writeBytes(fileIv + fileEncryptedData)
+                        
+                        val db = com.example.data.AppDatabase.getDatabase(context)
+                        db.vaultItemDao().insert(VaultItem(
+                            encryptedPath = newFile.absolutePath,
+                            encryptedFilename = encryptedFilename,
+                            timestamp = System.currentTimeMillis()
+                        ))
+                        withContext(Dispatchers.Main) {
+                            Toast.makeText(context, "Added to Vault", Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                } catch (e: Exception) {
+                    withContext(Dispatchers.Main) {
+                        Toast.makeText(context, "Failed to add file: ${e.message}", Toast.LENGTH_SHORT).show()
+                    }
+                }
+            }
+        }
+    }
     
     val exportLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("*/*")) { uri ->
         if (uri != null && itemToExport != null) {
@@ -151,6 +193,15 @@ fun VaultScreen(onBack: () -> Unit, onNavigateToCodeEditor: (String) -> Unit = {
                     }
                 }
             )
+        },
+        floatingActionButton = {
+            if (isUnlocked) {
+                FloatingActionButton(onClick = {
+                    filePickerLauncher.launch(arrayOf("*/*"))
+                }) {
+                    Icon(Icons.Default.Add, contentDescription = "Add File")
+                }
+            }
         }
     ) { padding ->
         Box(
@@ -262,9 +313,9 @@ fun VaultScreen(onBack: () -> Unit, onNavigateToCodeEditor: (String) -> Unit = {
                                                             val encryptedData = fileBytes.copyOfRange(12, fileBytes.size)
                                                             val decryptedBytes = KeystoreHelper().decrypt(iv, encryptedData)
                                                             
-                                                            val cacheDir = File(context.cacheDir, "vault_temp")
-                                                            if (!cacheDir.exists()) cacheDir.mkdirs()
-                                                            val tempFile = File(cacheDir, decryptedName)
+                                                            val tempDir = context.getDir("vault_temp", android.content.Context.MODE_PRIVATE)
+                                                            if (!tempDir.exists()) tempDir.mkdirs()
+                                                            val tempFile = File(tempDir, decryptedName)
                                                             tempFile.writeBytes(decryptedBytes)
                                                             
                                                             val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", tempFile)
@@ -276,6 +327,8 @@ fun VaultScreen(onBack: () -> Unit, onNavigateToCodeEditor: (String) -> Unit = {
                                                             withContext(Dispatchers.Main) {
                                                                 context.startActivity(Intent.createChooser(intent, "Open File"))
                                                             }
+                                                            kotlinx.coroutines.delay(30000)
+                                                            tempFile.delete()
                                                         } catch (e: Exception) {
                                                             withContext(Dispatchers.Main) {
                                                                 Toast.makeText(context, "Failed to open: ${e.message}", Toast.LENGTH_SHORT).show()

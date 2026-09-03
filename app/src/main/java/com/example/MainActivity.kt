@@ -93,13 +93,27 @@ class MainActivity : FragmentActivity() {
 @Composable
 fun DevVaultApp() {
     val navController = rememberNavController()
-    NavHost(navController = navController, startDestination = "home") {
+    NavHost(navController = navController, startDestination = "splash") {
+        composable("splash") {
+            com.example.ui.screens.splash.SplashScreen(onNavigateToHome = {
+                navController.navigate("home") {
+                    popUpTo("splash") { inclusive = true }
+                }
+            })
+        }
         composable("home") {
             HomeScreen(onNavigate = { route -> navController.navigate(route) })
         }
         composable("file_manager") { 
             val context = androidx.compose.ui.platform.LocalContext.current
-            FileManagerScreen(onBack = { navController.popBackStack() }, rootDir = context.filesDir, onNavigateToEditor = { path -> navController.navigate("code_editor?filePath=${android.net.Uri.encode(path)}") }) 
+            val externalRoot = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
+                if (android.os.Environment.isExternalStorageManager()) {
+                    android.os.Environment.getExternalStorageDirectory()
+                } else context.filesDir
+            } else {
+                android.os.Environment.getExternalStorageDirectory()
+            }
+            FileManagerScreen(onBack = { navController.popBackStack() }, rootDir = externalRoot, onNavigateToEditor = { path -> navController.navigate("code_editor?filePath=${android.net.Uri.encode(path)}") }) 
         }
         composable("code_editor?filePath={filePath}") { backStackEntry ->
             val filePath = backStackEntry.arguments?.getString("filePath") 
@@ -126,6 +140,9 @@ fun DevVaultApp() {
         }
         composable("vault") { 
             VaultScreen(onBack = { navController.popBackStack() }) 
+        }
+        composable("extractor") {
+             com.example.ui.screens.extractor.ExtractorScreen(onBack = { navController.popBackStack() })
         }
         composable("settings") { 
             SettingsScreen(onBack = { navController.popBackStack() })

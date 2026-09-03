@@ -99,6 +99,27 @@ fun SettingsScreen(onBack: () -> Unit) {
                     checked = p.biometricUnlock,
                     onCheckedChange = { viewModel.updateBiometricUnlock(it) }
                 )
+                
+                val devicePolicyManager = context.getSystemService(android.content.Context.DEVICE_POLICY_SERVICE) as android.app.admin.DevicePolicyManager
+                val adminComponent = android.content.ComponentName(context, com.example.admin.DevVaultAdminReceiver::class.java)
+                val isAdminActive = devicePolicyManager.isAdminActive(adminComponent)
+                
+                SettingItem(
+                    icon = Icons.Default.Security,
+                    title = "App Uninstall Protection",
+                    subtitle = if (isAdminActive) "Enabled. Tap to disable (requires auth)." else "Disabled. Tap to enable.",
+                    onClick = {
+                        if (!isAdminActive) {
+                            val intent = android.content.Intent(android.app.admin.DevicePolicyManager.ACTION_ADD_DEVICE_ADMIN)
+                            intent.putExtra(android.app.admin.DevicePolicyManager.EXTRA_DEVICE_ADMIN, adminComponent)
+                            intent.putExtra(android.app.admin.DevicePolicyManager.EXTRA_ADD_EXPLANATION, "Enabling this will prevent the app from being uninstalled without authentication.")
+                            context.startActivity(intent)
+                        } else {
+                            devicePolicyManager.removeActiveAdmin(adminComponent)
+                            android.widget.Toast.makeText(context, "Uninstall Protection Disabled", android.widget.Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                )
             }
             item {
                 Divider()

@@ -1,5 +1,7 @@
 package com.example.ui.screens.contacts
 
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import android.Manifest
 import android.content.ContentProviderOperation
 import android.content.Context
@@ -34,13 +36,32 @@ import org.json.JSONObject
 
 data class ContactItem(val id: String, val name: String, val phoneNumber: String)
 
-@OptIn(ExperimentalMaterial3Api::class, ExperimentalPermissionsApi::class)
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ContactsScreen(onBack: () -> Unit) {
     val context = LocalContext.current
-    val permissionState = rememberPermissionState(permission = Manifest.permission.READ_CONTACTS)
-    val writePermissionState = rememberPermissionState(permission = Manifest.permission.WRITE_CONTACTS)
+    var hasPermissions by remember { mutableStateOf(false) }
+    var showRationale by remember { mutableStateOf(false) }
     var showBackups by remember { mutableStateOf(false) }
+
+    val permissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestMultiplePermissions()
+    ) { permissions: Map<String, Boolean> ->
+        hasPermissions = permissions[Manifest.permission.READ_CONTACTS] == true && 
+                         permissions[Manifest.permission.WRITE_CONTACTS] == true
+        if (!hasPermissions) {
+            showRationale = true
+        }
+    }
+
+    LaunchedEffect(Unit) {
+        val readGranted = androidx.core.content.ContextCompat.checkSelfPermission(context, Manifest.permission.READ_CONTACTS) == android.content.pm.PackageManager.PERMISSION_GRANTED
+        val writeGranted = androidx.core.content.ContextCompat.checkSelfPermission(context, Manifest.permission.WRITE_CONTACTS) == android.content.pm.PackageManager.PERMISSION_GRANTED
+        hasPermissions = readGranted && writeGranted
+        if (!hasPermissions) {
+            permissionLauncher.launch(arrayOf(Manifest.permission.READ_CONTACTS, Manifest.permission.WRITE_CONTACTS))
+        }
+    }
 
     Scaffold(
         topBar = {
@@ -55,7 +76,7 @@ fun ContactsScreen(onBack: () -> Unit) {
         }
     ) { padding ->
         Box(modifier = Modifier.fillMaxSize().padding(padding)) {
-            if (permissionState.status.isGranted && writePermissionState.status.isGranted) {
+            if (hasPermissions) {
                 if (showBackups) {
                     ContactBackupsList(context)
                 } else {
@@ -67,18 +88,24 @@ fun ContactsScreen(onBack: () -> Unit) {
                     horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.Center
                 ) {
-                    val textToShow = if (permissionState.status.shouldShowRationale || writePermissionState.status.shouldShowRationale) {
-                        "The contacts permissions are important for this app to display and manage your contacts. Please grant them."
-                    } else {
-                        "Contacts permissions required for this feature to be available."
-                    }
-                    Text(textToShow, modifier = Modifier.padding(16.dp))
+                    Text(
+                        if (showRationale) "The contacts permissions are important for this app to display and manage your contacts. Please grant them in settings." 
+                        else "Contacts permissions required for this feature to be available.",
+                        modifier = Modifier.padding(16.dp),
+                        textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                    )
                     Spacer(modifier = Modifier.height(8.dp))
                     Button(onClick = { 
-                        permissionState.launchPermissionRequest()
-                        writePermissionState.launchPermissionRequest()
+                        if (showRationale) {
+                            val intent = android.content.Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                                data = android.net.Uri.fromParts("package", context.packageName, null)
+                            }
+                            context.startActivity(intent)
+                        } else {
+                            permissionLauncher.launch(arrayOf(Manifest.permission.READ_CONTACTS, Manifest.permission.WRITE_CONTACTS))
+                        }
                     }) {
-                        Text("Request permissions")
+                        Text(if (showRationale) "Open Settings" else "Request permissions")
                     }
                 }
             }
@@ -98,24 +125,28 @@ fun ContactsList(context: Context) {
     fun loadContacts() {
         scope.launch(Dispatchers.IO) {
             val contactList = mutableListOf<ContactItem>()
-            val cursor = context.contentResolver.query(
-                ContactsContract.CommonDataKinds.Phone.CONTENT_URI,
-                null, null, null, null
-            )
-            
-            cursor?.use {
-                val idIndex = it.getColumnIndex(ContactsContract.CommonDataKinds.Phone.CONTACT_ID)
-                val nameIndex = it.getColumnIndex(ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME)
-                val numberIndex = it.getColumnIndex(ContactsContract.CommonDataKinds.Phone.NUMBER)
+            try {
+                val cursor = context.contentResolver.query(
+                    ContactsContract.CommonDataKinds.Phone.CONTENT_URI,
+                    null, null, null, null
+                )
                 
-                while (it.moveToNext()) {
-                    if (idIndex >= 0 && nameIndex >= 0 && numberIndex >= 0) {
-                        val id = it.getString(idIndex)
-                        val name = it.getString(nameIndex)
-                        val number = it.getString(numberIndex)
-                        contactList.add(ContactItem(id, name, number))
+                cursor?.use {
+                    val idIndex = it.getColumnIndex(ContactsContract.CommonDataKinds.Phone.CONTACT_ID)
+                    val nameIndex = it.getColumnIndex(ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME)
+                    val numberIndex = it.getColumnIndex(ContactsContract.CommonDataKinds.Phone.NUMBER)
+                    
+                    while (it.moveToNext()) {
+                        if (idIndex >= 0 && nameIndex >= 0 && numberIndex >= 0) {
+                            val id = it.getString(idIndex)
+                            val name = it.getString(nameIndex)
+                            val number = it.getString(numberIndex)
+                            contactList.add(ContactItem(id, name, number))
+                        }
                     }
                 }
+            } catch (e: Exception) {
+                // Ignore exception, just show empty or partial list
             }
             withContext(Dispatchers.Main) {
                 contacts = contactList.distinctBy { it.id }.sortedBy { it.name }

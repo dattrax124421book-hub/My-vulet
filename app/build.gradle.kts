@@ -53,12 +53,12 @@ android {
     }
     debug { 
       if (file("${rootDir}/debug.keystore").exists()) {
-        signingConfig = signingConfigs.getByName("debugConfig")
+        signsigningConfigingConfig = signingConfigs.getByName("debugConfig")
       }
     }
   }
   compileOptions {
-    sourceCompatibility = JavaVersion.VERSION_11
+    ssourceCompatibilityourceCompatibility = JavaVersion.VERSION_11
     targetCompatibility = JavaVersion.VERSION_11
   }
   buildFeatures {
@@ -100,10 +100,13 @@ dependencies {
   implementation(libs.androidx.biometric)
   implementation(libs.androidx.security.crypto)
   implementation("androidx.documentfile:documentfile:1.0.1")
+  implementation("com.google.mlkit:text-recognition:16.0.0")
+  implementation("com.tom-roush:pdfbox-android:2.0.27.0")
   // implementation(libs.coil.compose)
   
   implementation(libs.kotlinx.coroutines.android)
   implementation(libs.kotlinx.coroutines.core)
+  implementation("org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.8.0")
 
   testImplementation(libs.androidx.compose.ui.test.junit4)
   testImplementation(libs.androidx.core)

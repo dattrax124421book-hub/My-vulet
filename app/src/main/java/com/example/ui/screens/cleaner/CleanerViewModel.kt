@@ -81,7 +81,11 @@ class CleanerViewModel : ViewModel() {
                 }
             }
             
-            val externalRoot = Environment.getExternalStorageDirectory()
+            val externalRoot = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R && android.os.Environment.isExternalStorageManager()) {
+                android.os.Environment.getExternalStorageDirectory()
+            } else {
+                context.getExternalFilesDir(null) ?: android.os.Environment.getExternalStorageDirectory()
+            }
             scanDir(externalRoot)
             
             // Filter duplicates

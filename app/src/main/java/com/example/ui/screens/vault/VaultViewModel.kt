@@ -122,7 +122,7 @@ class VaultViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun hashPin(pin: String, salt: ByteArray): ByteArray {
-        val spec = PBEKeySpec(pin.toCharArray(), salt, 10000, 256)
+        val spec = PBEKeySpec(pin.toCharArray(), salt, 100000, 256)
         val factory = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256")
         return factory.generateSecret(spec).encoded
     }
