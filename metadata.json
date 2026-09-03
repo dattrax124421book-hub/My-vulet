@@ -1,0 +1,6 @@
+{
+  "name": "DevVault",
+  "description": "All-in-One Personal Android Utility Application with Offline Code Editor",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

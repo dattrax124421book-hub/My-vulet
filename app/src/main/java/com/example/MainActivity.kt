@@ -1,0 +1,135 @@
+package com.example
+
+import android.os.Bundle
+import androidx.fragment.app.FragmentActivity
+import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
+import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.ui.Modifier
+import androidx.lifecycle.lifecycleScope
+import androidx.navigation.compose.NavHost
+import androidx.navigation.compose.composable
+import androidx.navigation.compose.rememberNavController
+import com.example.data.UserPreferencesRepository
+import com.example.ui.screens.ComingSoonScreen
+import com.example.ui.screens.HomeScreen
+import com.example.ui.screens.notes.NotesScreen
+import com.example.ui.screens.editor.CodeEditorScreen
+import com.example.ui.screens.files.FileManagerScreen
+import com.example.ui.screens.network.NetworkScreen
+import com.example.ui.screens.apps.AppsScreen
+import com.example.ui.screens.apk.ApkToolsScreen
+import com.example.ui.screens.cleaner.CleanerScreen
+import com.example.ui.screens.vault.VaultScreen
+import com.example.ui.screens.contacts.ContactsScreen
+import com.example.ui.screens.settings.SettingsScreen
+import com.example.ui.theme.MyApplicationTheme
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
+import androidx.lifecycle.ProcessLifecycleOwner
+import androidx.lifecycle.DefaultLifecycleObserver
+import androidx.lifecycle.LifecycleOwner
+
+class MainActivity : FragmentActivity() {
+    private lateinit var prefsRepo: UserPreferencesRepository
+    private var backgroundTime = 0L
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        prefsRepo = UserPreferencesRepository(this)
+        
+        ProcessLifecycleOwner.get().lifecycle.addObserver(object : DefaultLifecycleObserver {
+            override fun onStop(owner: LifecycleOwner) {
+                backgroundTime = System.currentTimeMillis()
+            }
+            override fun onStart(owner: LifecycleOwner) {
+                if (backgroundTime > 0) {
+                    lifecycleScope.launch {
+                        val prefs = prefsRepo.userPreferencesFlow.first()
+                        val timeout = prefs.vaultLockTimeout
+                        if (timeout != -1L) {
+                            val timeInBackground = System.currentTimeMillis() - backgroundTime
+                            if (timeInBackground >= timeout) {
+                                // Need to signal VaultViewModel to lock.
+                                // In a real architecture, we would have a central AuthManager.
+                                // For now, we will store a global lock flag or use a broadcast.
+                                // Setting a shared preference is a simple cross-component way.
+                                val sharedPrefs = getSharedPreferences("vault_state", MODE_PRIVATE)
+                                sharedPrefs.edit().putBoolean("force_lock", true).apply()
+                            }
+                        }
+                    }
+                }
+            }
+        })
+
+        enableEdgeToEdge()
+        setContent {
+            val prefs by prefsRepo.userPreferencesFlow.collectAsState(initial = null)
+            
+            val isDarkTheme = when (prefs?.theme) {
+                "LIGHT" -> false
+                "DARK" -> true
+                else -> isSystemInDarkTheme()
+            }
+
+            MyApplicationTheme(darkTheme = isDarkTheme) {
+                Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+                    DevVaultApp()
+                }
+            }
+        }
+    }
+}
+
+
+@Composable
+fun DevVaultApp() {
+    val navController = rememberNavController()
+    NavHost(navController = navController, startDestination = "home") {
+        composable("home") {
+            HomeScreen(onNavigate = { route -> navController.navigate(route) })
+        }
+        composable("file_manager") { 
+            val context = androidx.compose.ui.platform.LocalContext.current
+            FileManagerScreen(onBack = { navController.popBackStack() }, rootDir = context.filesDir, onNavigateToEditor = { path -> navController.navigate("code_editor?filePath=${android.net.Uri.encode(path)}") }) 
+        }
+        composable("code_editor?filePath={filePath}") { backStackEntry ->
+            val filePath = backStackEntry.arguments?.getString("filePath") 
+            val context = androidx.compose.ui.platform.LocalContext.current
+            CodeEditorScreen(onBack = { navController.popBackStack() }, filesDir = context.filesDir, initialFilePath = filePath) 
+        }
+        composable("apk_tools") { 
+            ApkToolsScreen(onBack = { navController.popBackStack() }) 
+        }
+        composable("apps") { 
+            AppsScreen(onBack = { navController.popBackStack() }) 
+        }
+        composable("network") { 
+            NetworkScreen(onBack = { navController.popBackStack() }) 
+        }
+        composable("cleaner") { 
+            CleanerScreen(onBack = { navController.popBackStack() }) 
+        }
+        composable("notes") { 
+            NotesScreen(onBack = { navController.popBackStack() }) 
+        }
+        composable("contacts") { 
+            ContactsScreen(onBack = { navController.popBackStack() }) 
+        }
+        composable("vault") { 
+            VaultScreen(onBack = { navController.popBackStack() }) 
+        }
+        composable("settings") { 
+            SettingsScreen(onBack = { navController.popBackStack() })
+        }
+    }
+}
+
