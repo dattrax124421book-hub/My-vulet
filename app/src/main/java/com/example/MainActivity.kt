@@ -26,12 +26,17 @@ import com.example.ui.screens.notes.NotesScreen
 import com.example.ui.screens.editor.CodeEditorScreen
 import com.example.ui.screens.files.FileManagerScreen
 import com.example.ui.screens.network.NetworkScreen
+import com.example.ui.screens.network.WebShareScreen
 import com.example.ui.screens.apps.AppsScreen
 import com.example.ui.screens.apk.ApkToolsScreen
 import com.example.ui.screens.cleaner.CleanerScreen
 import com.example.ui.screens.vault.VaultScreen
 import com.example.ui.screens.contacts.ContactsScreen
 import com.example.ui.screens.settings.SettingsScreen
+import com.example.ui.screens.hash.HashCalculatorScreen
+import com.example.ui.screens.hex.HexViewerScreen
+import com.example.ui.screens.renamer.BatchRenamerScreen
+import com.example.ui.screens.terminal.TerminalScreen
 import com.example.ui.theme.MyApplicationTheme
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
@@ -117,7 +122,15 @@ fun DevVaultApp() {
             } else {
                 android.os.Environment.getExternalStorageDirectory()
             }
-            FileManagerScreen(onBack = { navController.popBackStack() }, rootDir = externalRoot, onNavigateToEditor = { path -> navController.navigate("code_editor?filePath=${android.net.Uri.encode(path)}") }) 
+            FileManagerScreen(
+                onBack = { navController.popBackStack() }, 
+                rootDir = externalRoot, 
+                onNavigateToEditor = { path -> navController.navigate("code_editor?filePath=${android.net.Uri.encode(path)}") },
+                onNavigateToHex = { path -> navController.navigate("hex_viewer?filePath=${android.net.Uri.encode(path)}") },
+                onNavigateToHash = { path -> navController.navigate("hash_calc?filePath=${android.net.Uri.encode(path)}") },
+                onNavigateToRenamer = { navController.navigate("batch_renamer") },
+                onNavigateToWebShare = { navController.navigate("web_share") }
+            ) 
         }
         composable(
             route = "code_editor?filePath={filePath}",
@@ -135,6 +148,47 @@ fun DevVaultApp() {
             }
             val context = androidx.compose.ui.platform.LocalContext.current
             CodeEditorScreen(onBack = { navController.popBackStack() }, filesDir = context.filesDir, initialFilePath = filePath) 
+        }
+        composable(
+            route = "hex_viewer?filePath={filePath}",
+            arguments = listOf(
+                navArgument("filePath") {
+                    type = NavType.StringType
+                    nullable = true
+                    defaultValue = null
+                }
+            )
+        ) { backStackEntry ->
+            val rawFilePath = backStackEntry.arguments?.getString("filePath")
+            val filePath = rawFilePath?.let {
+                try { android.net.Uri.decode(it) } catch (e: Exception) { it }
+            }
+            HexViewerScreen(initialFilePath = filePath, onBack = { navController.popBackStack() })
+        }
+        composable(
+            route = "hash_calc?filePath={filePath}",
+            arguments = listOf(
+                navArgument("filePath") {
+                    type = NavType.StringType
+                    nullable = true
+                    defaultValue = null
+                }
+            )
+        ) { backStackEntry ->
+            val rawFilePath = backStackEntry.arguments?.getString("filePath")
+            val filePath = rawFilePath?.let {
+                try { android.net.Uri.decode(it) } catch (e: Exception) { it }
+            }
+            HashCalculatorScreen(initialFilePath = filePath, onBack = { navController.popBackStack() })
+        }
+        composable("batch_renamer") {
+            BatchRenamerScreen(onBack = { navController.popBackStack() })
+        }
+        composable("terminal") {
+            TerminalScreen(onBack = { navController.popBackStack() })
+        }
+        composable("web_share") {
+            WebShareScreen(onBack = { navController.popBackStack() })
         }
         composable("apk_tools") { 
             ApkToolsScreen(onBack = { navController.popBackStack() }) 

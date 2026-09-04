@@ -230,7 +230,7 @@ class WebFileServer(
 
     private fun generateDirectoryHtml(dir: File): String {
         val relPath = dir.absolutePath.removePrefix(rootDir.absolutePath).removePrefix("/")
-        val items = dir.listFiles()?.sortedWith(compareBy({ !it.isDirectory }, { it.name.lowercase() })) ?: emptyArray()
+        val items: List<File> = dir.listFiles()?.sortedWith(compareBy<File>({ !it.isDirectory }, { it.name.lowercase() })) ?: emptyList()
 
         val sdf = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault())
 

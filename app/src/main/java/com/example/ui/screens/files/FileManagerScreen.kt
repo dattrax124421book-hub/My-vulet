@@ -434,6 +434,22 @@ fun FileManagerScreen(
                                 }
                             )
                             DropdownMenuItem(
+                                text = { Text("Wi-Fi Web Share") },
+                                leadingIcon = { Icon(Icons.Default.WifiTethering, null) },
+                                onClick = {
+                                    showMainMenu = false
+                                    onNavigateToWebShare()
+                                }
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Batch Renamer") },
+                                leadingIcon = { Icon(Icons.Default.DriveFileRenameOutline, null) },
+                                onClick = {
+                                    showMainMenu = false
+                                    onNavigateToRenamer(emptyList())
+                                }
+                            )
+                            DropdownMenuItem(
                                 text = { Text("Refresh") },
                                 leadingIcon = { Icon(Icons.Default.Refresh, null) },
                                 onClick = {
