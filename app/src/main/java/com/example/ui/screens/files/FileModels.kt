@@ -123,7 +123,7 @@ object FileUtils {
             ext == "pdf" -> FileType.PDF
             DOC_EXT.contains(ext) -> FileType.DOCUMENT
             ARCHIVE_EXT.contains(ext) -> FileType.ARCHIVE
-            ext == "apk" || ext == "xapk" -> FileType.APK
+            ext == "apk" || ext == "xapk" || ext == "apks" || ext == "apkm" -> FileType.APK
             CODE_EXT.contains(ext) -> FileType.CODE
             TEXT_EXT.contains(ext) -> FileType.TEXT
             else -> FileType.UNKNOWN
@@ -137,7 +137,7 @@ object FileUtils {
             VIDEO_EXT.contains(ext) -> "video/*"
             AUDIO_EXT.contains(ext) -> "audio/*"
             ext == "pdf" -> "application/pdf"
-            ext == "apk" -> "application/vnd.android.package-archive"
+            ext == "apk" || ext == "apks" || ext == "xapk" || ext == "apkm" -> "application/vnd.android.package-archive"
             ARCHIVE_EXT.contains(ext) -> "application/zip"
             CODE_EXT.contains(ext) || TEXT_EXT.contains(ext) -> "text/plain"
             DOC_EXT.contains(ext) -> "application/msword"

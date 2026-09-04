@@ -2,18 +2,14 @@ package com.example.ui.screens.apk
 
 import android.content.ClipData
 import android.content.ClipboardManager
-import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ApplicationInfo
-import android.content.pm.PackageInfo
 import android.content.pm.PackageManager
 import android.content.pm.Signature
 import android.net.Uri
 import android.os.Build
 import android.os.Environment
-import android.provider.MediaStore
-import android.provider.Settings
 import android.text.format.Formatter
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -22,9 +18,12 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -33,6 +32,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
@@ -40,12 +40,11 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.FileProvider
 import androidx.core.content.pm.PackageInfoCompat
 import androidx.core.graphics.drawable.toBitmap
-import androidx.documentfile.provider.DocumentFile
-import com.example.data.UserPreferencesRepository
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -74,40 +73,47 @@ data class ApkDeepDetails(
     val providersCount: Int,
     val signatureSha256: String,
     val signatureMd5: String,
-    val nativeLibs: List<String>
+    val nativeLibs: List<String>,
+    val components: List<ApkComponentInfo> = emptyList()
 )
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ApkToolsScreen(
     onBack: () -> Unit,
-    onNavigateToHex: (String) -> Unit = {}
+    onNavigateToHex: (String) -> Unit = {},
+    onOpenFileManager: ((String) -> Unit)? = null
 ) {
     val context = LocalContext.current
     val packageManager = context.packageManager
     val scope = rememberCoroutineScope()
-    val prefsRepo = remember { UserPreferencesRepository(context) }
 
     var apps by remember { mutableStateOf<List<ApkItem>>(emptyList()) }
     var searchQuery by remember { mutableStateOf("") }
     var isLoading by remember { mutableStateOf(true) }
-    var showSystemApps by remember { mutableStateOf(false) }
+    var selectedFilter by remember { mutableStateOf("USER") } // "ALL", "USER", "SPLITS", "SYSTEM"
 
-    var extractingApp by remember { mutableStateOf<String?>(null) }
-    var extractingProgress by remember { mutableStateOf<Float?>(null) }
+    // Active extraction states
+    var progressState by remember { mutableStateOf(ExtractionProgressState()) }
+    var completedResult by remember { mutableStateOf<ExtractionResult?>(null) }
+    var extractionJob by remember { mutableStateOf<Job?>(null) }
 
-    // Deep inspect sheet state
+    // Dialog states
+    var pendingSplitChoice by remember { mutableStateOf<ApkItem?>(null) }
     var inspectingApp by remember { mutableStateOf<ApkItem?>(null) }
     var inspectDetails by remember { mutableStateOf<ApkDeepDetails?>(null) }
     var isInspectingLoading by remember { mutableStateOf(false) }
 
-    val loadApps = {
+    // External file picker dialog states
+    var externalPickedFile by remember { mutableStateOf<File?>(null) }
+    var viewingPackageDetails by remember { mutableStateOf<ApkPackageDetails?>(null) }
+
+    // Load installed apps
+    fun loadApps() {
         isLoading = true
         scope.launch(Dispatchers.IO) {
             val installedApps = packageManager.getInstalledApplications(PackageManager.GET_META_DATA)
             val mapped = installedApps.mapNotNull { appInfo ->
-                if (!showSystemApps && (appInfo.flags and ApplicationInfo.FLAG_SYSTEM) != 0) return@mapNotNull null
-
                 try {
                     val packageInfo = packageManager.getPackageInfo(appInfo.packageName, 0)
                     val versionCode = PackageInfoCompat.getLongVersionCode(packageInfo)
@@ -148,26 +154,106 @@ fun ApkToolsScreen(
         }
     }
 
-    LaunchedEffect(showSystemApps) {
+    LaunchedEffect(Unit) {
         loadApps()
     }
 
-    var pendingExtraction by remember { mutableStateOf<ApkItem?>(null) }
-
-    val safPickerLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
+    // External APK Picker Launcher
+    val externalFilePicker = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri ->
         if (uri != null) {
-            val takeFlags = Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
-            context.contentResolver.takePersistableUriPermission(uri, takeFlags)
-            scope.launch {
-                prefsRepo.updateDefaultExportUri(uri.toString())
-                pendingExtraction?.let { app ->
-                    extractApk(context, app, uri.toString(), scope, { extractingApp = it }, { extractingProgress = it })
+            scope.launch(Dispatchers.IO) {
+                try {
+                    val tempFile = File(context.cacheDir, "picked_${System.currentTimeMillis()}_${getFileName(context, uri)}")
+                    context.contentResolver.openInputStream(uri)?.use { input ->
+                        tempFile.outputStream().use { output ->
+                            input.copyTo(output)
+                        }
+                    }
+                    withContext(Dispatchers.Main) {
+                        externalPickedFile = tempFile
+                    }
+                } catch (e: Exception) {
+                    withContext(Dispatchers.Main) {
+                        Toast.makeText(context, "Error opening file: ${e.message}", Toast.LENGTH_SHORT).show()
+                    }
                 }
-                pendingExtraction = null
             }
-        } else {
-            pendingExtraction = null
-            Toast.makeText(context, "Export cancelled", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    // Start extraction function
+    fun startExtraction(app: ApkItem, mode: ExtractionMode?) {
+        val splits = app.splitSourceDirs?.map { File(it) } ?: emptyList()
+        val isSplit = splits.isNotEmpty()
+
+        if (isSplit && mode == null) {
+            pendingSplitChoice = app
+            return
+        }
+
+        extractionJob?.cancel()
+        extractionJob = scope.launch {
+            progressState = ExtractionProgressState(
+                isActive = true,
+                appName = app.name,
+                stage = "Initializing...",
+                currentFile = app.name
+            )
+            completedResult = null
+
+            try {
+                val baseFile = File(app.baseSourceDir)
+                val result = when {
+                    !isSplit -> {
+                        ApkProcessor.extractSingleApk(
+                            context = context,
+                            sourceApk = baseFile,
+                            appName = app.name,
+                            packageName = app.packageName,
+                            versionName = app.versionName,
+                            onProgress = { progressState = it }
+                        )
+                    }
+                    mode == ExtractionMode.UNIVERSAL_STANDALONE_APK -> {
+                        ApkProcessor.createUniversalApk(
+                            context = context,
+                            baseApk = baseFile,
+                            splitApks = splits,
+                            appName = app.name,
+                            packageName = app.packageName,
+                            versionName = app.versionName,
+                            onProgress = { progressState = it }
+                        )
+                    }
+                    mode == ExtractionMode.RAW_SPLITS_FOLDER -> {
+                        // Extract separate splits to dedicated folder
+                        extractRawSplits(context, app, baseFile, splits) { progressState = it }
+                    }
+                    else -> {
+                        // UNIFIED_APKS_BUNDLE (Default recommended for split packages)
+                        ApkProcessor.createApksBundle(
+                            context = context,
+                            baseApk = baseFile,
+                            splitApks = splits,
+                            appName = app.name,
+                            packageName = app.packageName,
+                            versionName = app.versionName,
+                            onProgress = { progressState = it }
+                        )
+                    }
+                }
+
+                completedResult = result
+                progressState = ExtractionProgressState(isActive = false)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                progressState = ExtractionProgressState(isActive = false, isCancelled = true)
+                Toast.makeText(context, "Extraction cancelled", Toast.LENGTH_SHORT).show()
+            } catch (e: Exception) {
+                progressState = ExtractionProgressState(isActive = false, error = e.message)
+                Toast.makeText(context, "Extraction failed: ${e.message}", Toast.LENGTH_LONG).show()
+            }
         }
     }
 
@@ -225,8 +311,30 @@ fun ApkToolsScreen(
                             }
                         }
                     }
-                } catch (e: Exception) {
-                    // ignore
+                } catch (ignored: Exception) {}
+
+                // Build component list
+                val components = mutableListOf<ApkComponentInfo>()
+                val baseFile = File(app.baseSourceDir)
+                components.add(
+                    ApkComponentInfo(
+                        name = "base.apk",
+                        size = baseFile.length(),
+                        type = ComponentType.BASE,
+                        details = "Core Android Manifest, Dalvik Executable (DEX), base resources"
+                    )
+                )
+                app.splitSourceDirs?.forEach { splitPath ->
+                    val file = File(splitPath)
+                    val cType = ApkProcessor.classifyComponent(file.name)
+                    components.add(
+                        ApkComponentInfo(
+                            name = file.name,
+                            size = file.length(),
+                            type = cType,
+                            details = cType.title
+                        )
+                    )
                 }
 
                 withContext(Dispatchers.Main) {
@@ -238,7 +346,8 @@ fun ApkToolsScreen(
                         providersCount = prvCount,
                         signatureSha256 = sha256Str,
                         signatureMd5 = md5Str,
-                        nativeLibs = nativeLibs
+                        nativeLibs = nativeLibs,
+                        components = components
                     )
                     isInspectingLoading = false
                 }
@@ -251,27 +360,48 @@ fun ApkToolsScreen(
         }
     }
 
-    val filteredApps = if (searchQuery.isBlank()) apps else apps.filter {
-        it.name.contains(searchQuery, ignoreCase = true) || it.packageName.contains(searchQuery, ignoreCase = true)
+    // Filter apps
+    val filteredApps = remember(apps, searchQuery, selectedFilter) {
+        apps.filter { app ->
+            val matchesSearch = searchQuery.isBlank() ||
+                    app.name.contains(searchQuery, ignoreCase = true) ||
+                    app.packageName.contains(searchQuery, ignoreCase = true)
+
+            val matchesFilter = when (selectedFilter) {
+                "USER" -> !app.isSystem
+                "SPLITS" -> !app.splitSourceDirs.isNullOrEmpty()
+                "SYSTEM" -> app.isSystem
+                else -> true
+            }
+
+            matchesSearch && matchesFilter
+        }
     }
 
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Pro APK Inspector & Extractor") },
+                title = {
+                    Column {
+                        Text("Pro APK Extractor", style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold))
+                        Text(
+                            text = "${filteredApps.size} apps available",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back")
                     }
                 },
                 actions = {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text("System", style = MaterialTheme.typography.bodySmall)
-                        Switch(
-                            checked = showSystemApps,
-                            onCheckedChange = { showSystemApps = it },
-                            modifier = Modifier.padding(horizontal = 8.dp)
-                        )
+                    // Pick external APK or APKS
+                    IconButton(onClick = {
+                        externalFilePicker.launch(arrayOf("*/*", "application/vnd.android.package-archive", "application/zip"))
+                    }) {
+                        Icon(Icons.Default.FileOpen, contentDescription = "Open APK / APKS File")
                     }
                 }
             )
@@ -282,7 +412,7 @@ fun ApkToolsScreen(
                 .fillMaxSize()
                 .padding(padding)
         ) {
-            // Search field
+            // Search Input
             OutlinedTextField(
                 value = searchQuery,
                 onValueChange = { searchQuery = it },
@@ -299,8 +429,41 @@ fun ApkToolsScreen(
                 shape = RoundedCornerShape(12.dp),
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 8.dp)
+                    .padding(horizontal = 16.dp, vertical = 6.dp)
             )
+
+            // Filter Chips Strip
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState())
+                    .padding(horizontal = 16.dp, vertical = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                FilterChip(
+                    selected = selectedFilter == "ALL",
+                    onClick = { selectedFilter = "ALL" },
+                    label = { Text("All (${apps.size})") }
+                )
+                FilterChip(
+                    selected = selectedFilter == "USER",
+                    onClick = { selectedFilter = "USER" },
+                    label = { Text("User Apps (${apps.count { !it.isSystem }})") },
+                    leadingIcon = { Icon(Icons.Default.Person, contentDescription = null, modifier = Modifier.size(16.dp)) }
+                )
+                FilterChip(
+                    selected = selectedFilter == "SPLITS",
+                    onClick = { selectedFilter = "SPLITS" },
+                    label = { Text("Split Bundles (${apps.count { !it.splitSourceDirs.isNullOrEmpty() }})") },
+                    leadingIcon = { Icon(Icons.Default.Layers, contentDescription = null, modifier = Modifier.size(16.dp)) }
+                )
+                FilterChip(
+                    selected = selectedFilter == "SYSTEM",
+                    onClick = { selectedFilter = "SYSTEM" },
+                    label = { Text("System (${apps.count { it.isSystem }})") },
+                    leadingIcon = { Icon(Icons.Default.Settings, contentDescription = null, modifier = Modifier.size(16.dp)) }
+                )
+            }
 
             if (isLoading) {
                 Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -312,14 +475,19 @@ fun ApkToolsScreen(
                     contentPadding = PaddingValues(16.dp),
                     verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
-                    items(filteredApps) { app ->
+                    items(filteredApps, key = { it.packageName }) { app ->
+                        val hasSplits = !app.splitSourceDirs.isNullOrEmpty()
                         Card(
                             shape = RoundedCornerShape(12.dp),
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .clickable { loadDeepDetails(app) }
                         ) {
-                            Column(modifier = Modifier.padding(14.dp).fillMaxWidth()) {
+                            Column(
+                                modifier = Modifier
+                                    .padding(14.dp)
+                                    .fillMaxWidth()
+                            ) {
                                 Row(verticalAlignment = Alignment.CenterVertically) {
                                     Image(
                                         bitmap = app.icon.toBitmap().asImageBitmap(),
@@ -328,24 +496,52 @@ fun ApkToolsScreen(
                                     )
                                     Spacer(modifier = Modifier.width(14.dp))
                                     Column(modifier = Modifier.weight(1f)) {
-                                        Text(app.name, style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold))
-                                        Text(app.packageName, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            Text(
+                                                app.name,
+                                                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                                                modifier = Modifier.weight(1f, fill = false),
+                                                maxLines = 1
+                                            )
+                                            if (hasSplits) {
+                                                Spacer(Modifier.width(6.dp))
+                                                Surface(
+                                                    shape = RoundedCornerShape(4.dp),
+                                                    color = MaterialTheme.colorScheme.tertiaryContainer
+                                                ) {
+                                                    Text(
+                                                        text = "SPLIT (${app.splitSourceDirs!!.size + 1})",
+                                                        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                                                        color = MaterialTheme.colorScheme.onTertiaryContainer,
+                                                        modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp)
+                                                    )
+                                                }
+                                            }
+                                        }
+                                        Text(
+                                            app.packageName,
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            maxLines = 1
+                                        )
                                         Row(
                                             horizontalArrangement = Arrangement.SpaceBetween,
-                                            modifier = Modifier.fillMaxWidth().padding(top = 2.dp)
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .padding(top = 2.dp)
                                         ) {
                                             Text("v${app.versionName} (${app.versionCode})", style = MaterialTheme.typography.labelSmall)
-                                            Text(Formatter.formatShortFileSize(context, app.totalSize), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
+                                            Text(
+                                                Formatter.formatShortFileSize(context, app.totalSize),
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = MaterialTheme.colorScheme.primary,
+                                                fontWeight = FontWeight.Bold
+                                            )
                                         }
                                     }
                                 }
 
-                                if (!app.splitSourceDirs.isNullOrEmpty()) {
-                                    Spacer(modifier = Modifier.height(6.dp))
-                                    Text("⚡ Contains ${app.splitSourceDirs.size + 1} APK splits (App Bundle)", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.tertiary)
-                                }
-
-                                Spacer(modifier = Modifier.height(8.dp))
+                                Spacer(modifier = Modifier.height(10.dp))
 
                                 Row(
                                     modifier = Modifier.fillMaxWidth(),
@@ -366,35 +562,14 @@ fun ApkToolsScreen(
 
                                     Button(
                                         onClick = {
-                                            scope.launch {
-                                                val prefs = prefsRepo.userPreferencesFlow.first()
-                                                val exportUri = prefs.defaultExportUri
-                                                if (exportUri.isNotEmpty()) {
-                                                    extractApk(context, app, exportUri, scope, { extractingApp = it }, { extractingProgress = it })
-                                                } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                                                    extractApk(context, app, null, scope, { extractingApp = it }, { extractingProgress = it })
-                                                } else {
-                                                    pendingExtraction = app
-                                                    safPickerLauncher.launch(null)
-                                                }
-                                            }
+                                            startExtraction(app, null)
                                         },
-                                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
                                         modifier = Modifier.height(34.dp)
                                     ) {
                                         Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(16.dp))
                                         Spacer(Modifier.width(4.dp))
-                                        Text("Extract", style = MaterialTheme.typography.labelSmall)
-                                    }
-                                }
-
-                                if (extractingApp == app.packageName) {
-                                    Spacer(modifier = Modifier.height(8.dp))
-                                    val p = extractingProgress
-                                    if (p != null) {
-                                        LinearProgressIndicator(progress = { p }, modifier = Modifier.fillMaxWidth())
-                                    } else {
-                                        LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                                        Text("Extract APK", style = MaterialTheme.typography.labelSmall)
                                     }
                                 }
                             }
@@ -403,324 +578,488 @@ fun ApkToolsScreen(
                 }
             }
         }
+    }
+
+    // Split Extraction Choice Bottom Sheet
+    pendingSplitChoice?.let { app ->
+        SplitExtractionChoiceDialog(
+            app = app,
+            onDismiss = { pendingSplitChoice = null },
+            onSelectMode = { mode ->
+                pendingSplitChoice = null
+                startExtraction(app, mode)
+            }
+        )
+    }
+
+    // Professional Extraction Progress & Completion Dialog
+    if (progressState.isActive || completedResult != null) {
+        ApkExtractionProgressDialog(
+            progressState = progressState,
+            completedResult = completedResult,
+            onCancel = {
+                extractionJob?.cancel()
+                progressState = ExtractionProgressState(isActive = false, isCancelled = true)
+                Toast.makeText(context, "Extraction cancelled", Toast.LENGTH_SHORT).show()
+            },
+            onDismissCompleted = {
+                completedResult = null
+            },
+            onInstall = { file ->
+                scope.launch {
+                    ApkProcessor.installPackage(
+                        context = context,
+                        file = file,
+                        onSuccess = { Toast.makeText(context, it, Toast.LENGTH_SHORT).show() },
+                        onError = { Toast.makeText(context, it, Toast.LENGTH_LONG).show() }
+                    )
+                }
+            },
+            onShare = { file ->
+                shareApkFile(context, file)
+            },
+            onViewComponents = { file ->
+                scope.launch(Dispatchers.IO) {
+                    val details = ApkProcessor.inspectApkFile(context, file)
+                    withContext(Dispatchers.Main) {
+                        viewingPackageDetails = details
+                    }
+                }
+            },
+            onOpenFolder = { file ->
+                file.parentFile?.let { folder ->
+                    onOpenFileManager?.invoke(folder.absolutePath)
+                        ?: Toast.makeText(context, "Saved to: ${folder.absolutePath}", Toast.LENGTH_LONG).show()
+                }
+            }
+        )
+    }
+
+    // External Picked File Action Dialog (inspired by screenshot 3)
+    externalPickedFile?.let { file ->
+        ApkActionDialog(
+            file = file,
+            onDismiss = { externalPickedFile = null },
+            onInstall = { targetFile ->
+                scope.launch {
+                    ApkProcessor.installPackage(
+                        context = context,
+                        file = targetFile,
+                        onSuccess = { Toast.makeText(context, it, Toast.LENGTH_SHORT).show() },
+                        onError = { Toast.makeText(context, it, Toast.LENGTH_LONG).show() }
+                    )
+                }
+            },
+            onViewComponents = { targetFile ->
+                scope.launch(Dispatchers.IO) {
+                    val details = ApkProcessor.inspectApkFile(context, targetFile)
+                    withContext(Dispatchers.Main) {
+                        viewingPackageDetails = details
+                    }
+                }
+            },
+            onConvertToApk = { targetFile ->
+                extractionJob?.cancel()
+                extractionJob = scope.launch {
+                    try {
+                        progressState = ExtractionProgressState(
+                            isActive = true,
+                            appName = targetFile.nameWithoutExtension,
+                            stage = "Converting bundle to Universal APK...",
+                            currentFile = targetFile.name
+                        )
+                        val res = ApkProcessor.convertBundleToUniversalApk(
+                            context = context,
+                            bundleFile = targetFile,
+                            onProgress = { progressState = it }
+                        )
+                        completedResult = res
+                        progressState = ExtractionProgressState(isActive = false)
+                    } catch (e: Exception) {
+                        progressState = ExtractionProgressState(isActive = false, error = e.message)
+                        Toast.makeText(context, "Conversion failed: ${e.message}", Toast.LENGTH_LONG).show()
+                    }
+                }
+            },
+            onExtractSplits = { targetFile ->
+                scope.launch(Dispatchers.IO) {
+                    try {
+                        val outDir = File(ApkProcessor.getExportDirectory(context), "${targetFile.nameWithoutExtension}_extracted")
+                        outDir.mkdirs()
+                        ZipFile(targetFile).use { zip ->
+                            val entries = zip.entries()
+                            while (entries.hasMoreElements()) {
+                                val entry = entries.nextElement()
+                                if (!entry.isDirectory) {
+                                    val dest = File(outDir, entry.name.substringAfterLast('/'))
+                                    zip.getInputStream(entry).use { input ->
+                                        dest.outputStream().use { output -> input.copyTo(output) }
+                                    }
+                                }
+                            }
+                        }
+                        withContext(Dispatchers.Main) {
+                            Toast.makeText(context, "Extracted to: ${outDir.name}", Toast.LENGTH_LONG).show()
+                        }
+                    } catch (e: Exception) {
+                        withContext(Dispatchers.Main) {
+                            Toast.makeText(context, "Extract failed: ${e.message}", Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                }
+            },
+            onProperties = { targetFile ->
+                scope.launch(Dispatchers.IO) {
+                    val details = ApkProcessor.inspectApkFile(context, targetFile)
+                    withContext(Dispatchers.Main) {
+                        viewingPackageDetails = details
+                    }
+                }
+            },
+            onShare = { targetFile ->
+                shareApkFile(context, targetFile)
+            }
+        )
+    }
+
+    // Components Breakdown Bottom Sheet
+    viewingPackageDetails?.let { details ->
+        ApkComponentsViewerDialog(
+            details = details,
+            onDismiss = { viewingPackageDetails = null },
+            onInstall = {
+                File(details.mainApkPath).takeIf { it.exists() }?.let { apkFile ->
+                    scope.launch {
+                        ApkProcessor.installPackage(
+                            context = context,
+                            file = apkFile,
+                            onSuccess = { Toast.makeText(context, it, Toast.LENGTH_SHORT).show() },
+                            onError = { Toast.makeText(context, it, Toast.LENGTH_LONG).show() }
+                        )
+                    }
+                }
+            },
+            onConvertToUniversal = {
+                File(details.mainApkPath).takeIf { it.exists() }?.let { bundleFile ->
+                    extractionJob?.cancel()
+                    extractionJob = scope.launch {
+                        try {
+                            progressState = ExtractionProgressState(
+                                isActive = true,
+                                appName = details.appName,
+                                stage = "Converting to Universal APK...",
+                                currentFile = bundleFile.name
+                            )
+                            val res = ApkProcessor.convertBundleToUniversalApk(
+                                context = context,
+                                bundleFile = bundleFile,
+                                onProgress = { progressState = it }
+                            )
+                            completedResult = res
+                            progressState = ExtractionProgressState(isActive = false)
+                        } catch (e: Exception) {
+                            progressState = ExtractionProgressState(isActive = false, error = e.message)
+                            Toast.makeText(context, "Conversion failed: ${e.message}", Toast.LENGTH_LONG).show()
+                        }
+                    }
+                }
+            }
+        )
     }
 
     // Deep Inspection Bottom Sheet
     if (inspectingApp != null) {
         val targetApp = inspectingApp!!
         ModalBottomSheet(
-            onDismissRequest = { inspectingApp = null }
+            onDismissRequest = {
+                inspectingApp = null
+                inspectDetails = null
+            }
         ) {
-            LazyColumn(
+            Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 20.dp, vertical = 8.dp),
-                verticalArrangement = Arrangement.spacedBy(14.dp)
+                    .padding(horizontal = 20.dp, vertical = 8.dp)
             ) {
-                item {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Image(
-                            bitmap = targetApp.icon.toBitmap().asImageBitmap(),
-                            contentDescription = targetApp.name,
-                            modifier = Modifier.size(54.dp)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Image(
+                        bitmap = targetApp.icon.toBitmap().asImageBitmap(),
+                        contentDescription = targetApp.name,
+                        modifier = Modifier.size(54.dp)
+                    )
+                    Spacer(Modifier.width(16.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(targetApp.name, style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold))
+                        Text(targetApp.packageName, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.outline)
+                        Text(
+                            "v${targetApp.versionName} • Code ${targetApp.versionCode}",
+                            style = MaterialTheme.typography.labelSmall
                         )
-                        Spacer(Modifier.width(14.dp))
-                        Column {
-                            Text(targetApp.name, style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold))
-                            Text(targetApp.packageName, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.outline)
-                            Text("v${targetApp.versionName} • Build ${targetApp.versionCode}", style = MaterialTheme.typography.labelSmall)
-                        }
                     }
                 }
 
-                // Quick Action Bar
-                item {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        FilledTonalButton(
-                            onClick = {
-                                val intent = context.packageManager.getLaunchIntentForPackage(targetApp.packageName)
-                                if (intent != null) context.startActivity(intent)
-                                else Toast.makeText(context, "No launcher activity", Toast.LENGTH_SHORT).show()
-                            },
-                            modifier = Modifier.weight(1f)
-                        ) {
-                            Icon(Icons.Default.Launch, contentDescription = null, modifier = Modifier.size(16.dp))
-                            Spacer(Modifier.width(4.dp))
-                            Text("Launch")
-                        }
-
-                        FilledTonalButton(
-                            onClick = {
-                                val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
-                                    data = Uri.fromParts("package", targetApp.packageName, null)
-                                }
-                                context.startActivity(intent)
-                            },
-                            modifier = Modifier.weight(1f)
-                        ) {
-                            Icon(Icons.Default.Settings, contentDescription = null, modifier = Modifier.size(16.dp))
-                            Spacer(Modifier.width(4.dp))
-                            Text("App Info")
-                        }
-
-                        FilledTonalButton(
-                            onClick = {
-                                onNavigateToHex(targetApp.baseSourceDir)
-                                inspectingApp = null
-                            },
-                            modifier = Modifier.weight(1f)
-                        ) {
-                            Icon(Icons.Default.DataArray, contentDescription = null, modifier = Modifier.size(16.dp))
-                            Spacer(Modifier.width(4.dp))
-                            Text("Hex View")
-                        }
-                    }
-                }
-
-                item {
-                    HorizontalDivider()
-                }
-
-                // Architecture & SDK details
-                item {
-                    Card(
-                        shape = RoundedCornerShape(12.dp),
-                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Text("Technical SDK & Architecture", style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold))
-                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                                Text("Target SDK:", style = MaterialTheme.typography.bodySmall)
-                                Text("Android ${targetApp.targetSdk}", style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Bold))
-                            }
-                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                                Text("Min SDK:", style = MaterialTheme.typography.bodySmall)
-                                Text("Android ${targetApp.minSdk}", style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Bold))
-                            }
-                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                                Text("Base APK Path:", style = MaterialTheme.typography.bodySmall)
-                                Text(targetApp.baseSourceDir, style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace), maxLines = 1)
-                            }
-                        }
-                    }
-                }
+                Spacer(Modifier.height(14.dp))
 
                 if (isInspectingLoading) {
-                    item {
-                        Box(modifier = Modifier.fillMaxWidth().padding(20.dp), contentAlignment = Alignment.Center) {
-                            CircularProgressIndicator()
-                        }
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(140.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        CircularProgressIndicator()
                     }
                 } else if (inspectDetails != null) {
                     val d = inspectDetails!!
 
-                    // Components count
-                    item {
-                        Card(
-                            shape = RoundedCornerShape(12.dp),
-                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)),
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                                Text("Declared Manifest Components", style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold))
-                                Text("• Activities: ${d.activitiesCount}", style = MaterialTheme.typography.bodySmall)
-                                Text("• Services: ${d.servicesCount}", style = MaterialTheme.typography.bodySmall)
-                                Text("• Broadcast Receivers: ${d.receiversCount}", style = MaterialTheme.typography.bodySmall)
-                                Text("• Content Providers: ${d.providersCount}", style = MaterialTheme.typography.bodySmall)
-                                if (d.nativeLibs.isNotEmpty()) {
-                                    Text("• Native SO Architectures: ${d.nativeLibs.joinToString(", ")}", style = MaterialTheme.typography.bodySmall.copy(color = MaterialTheme.colorScheme.primary))
+                    LazyColumn(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 380.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        // Split components info
+                        if (d.components.size > 1) {
+                            item {
+                                Card(
+                                    shape = RoundedCornerShape(10.dp),
+                                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.5f))
+                                ) {
+                                    Column(modifier = Modifier.padding(12.dp)) {
+                                        Text(
+                                            "⚡ Split App Bundle (${d.components.size} components)",
+                                            style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
+                                            color = MaterialTheme.colorScheme.onTertiaryContainer
+                                        )
+                                        Spacer(Modifier.height(4.dp))
+                                        d.components.forEach { comp ->
+                                            Text(
+                                                "• ${comp.name} (${Formatter.formatShortFileSize(context, comp.size)})",
+                                                style = MaterialTheme.typography.labelSmall
+                                            )
+                                        }
+                                    }
                                 }
                             }
                         }
-                    }
 
-                    // Certificate Signatures
-                    item {
-                        Card(
-                            shape = RoundedCornerShape(12.dp),
-                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)),
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                Text("APK Signing Certificate Fingerprint", style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold))
-                                Text("SHA-256:", style = MaterialTheme.typography.labelSmall)
+                        item {
+                            InfoSectionHeader("Package Metrics")
+                            Text("Total Size: ${Formatter.formatShortFileSize(context, targetApp.totalSize)}", style = MaterialTheme.typography.bodySmall)
+                            Text("Target SDK: Android ${targetApp.targetSdk} (API ${targetApp.targetSdk})", style = MaterialTheme.typography.bodySmall)
+                            Text("Min SDK: Android ${targetApp.minSdk} (API ${targetApp.minSdk})", style = MaterialTheme.typography.bodySmall)
+                            Text("Type: ${if (targetApp.isSystem) "System Pre-installed" else "User Installed"}", style = MaterialTheme.typography.bodySmall)
+                        }
+
+                        item {
+                            InfoSectionHeader("Manifest Components")
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Text("Activities: ${d.activitiesCount}", style = MaterialTheme.typography.bodySmall)
+                                Text("Services: ${d.servicesCount}", style = MaterialTheme.typography.bodySmall)
+                                Text("Receivers: ${d.receiversCount}", style = MaterialTheme.typography.bodySmall)
+                                Text("Providers: ${d.providersCount}", style = MaterialTheme.typography.bodySmall)
+                            }
+                        }
+
+                        if (d.nativeLibs.isNotEmpty()) {
+                            item {
+                                InfoSectionHeader("Native Architectures (ABI)")
                                 Text(
-                                    d.signatureSha256,
-                                    style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace, fontSize = 10.5.sp),
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .background(MaterialTheme.colorScheme.surface, RoundedCornerShape(6.dp))
-                                        .padding(6.dp)
-                                        .clickable {
-                                            val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                                            clipboard.setPrimaryClip(ClipData.newPlainText("SHA256", d.signatureSha256))
-                                            Toast.makeText(context, "SHA-256 copied", Toast.LENGTH_SHORT).show()
-                                        }
+                                    d.nativeLibs.joinToString(", "),
+                                    style = MaterialTheme.typography.bodySmall.copy(
+                                        fontFamily = FontFamily.Monospace,
+                                        fontWeight = FontWeight.Bold
+                                    )
                                 )
+                            }
+                        }
 
-                                Text("MD5:", style = MaterialTheme.typography.labelSmall)
+                        item {
+                            InfoSectionHeader("Cryptographic Signatures")
+                            CopyableHashRow("SHA-256", d.signatureSha256, context)
+                            CopyableHashRow("MD5", d.signatureMd5, context)
+                        }
+
+                        item {
+                            InfoSectionHeader("Declared Permissions (${d.permissions.size})")
+                            d.permissions.take(20).forEach { perm ->
                                 Text(
-                                    d.signatureMd5,
-                                    style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace, fontSize = 10.5.sp),
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .background(MaterialTheme.colorScheme.surface, RoundedCornerShape(6.dp))
-                                        .padding(6.dp)
-                                        .clickable {
-                                            val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                                            clipboard.setPrimaryClip(ClipData.newPlainText("MD5", d.signatureMd5))
-                                            Toast.makeText(context, "MD5 copied", Toast.LENGTH_SHORT).show()
-                                        }
+                                    text = "• ${perm.substringAfterLast('.')}",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = if (perm.contains("STORAGE") || perm.contains("CAMERA") || perm.contains("LOCATION")) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            if (d.permissions.size > 20) {
+                                Text(
+                                    "+ ${d.permissions.size - 20} more permissions",
+                                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                                    color = MaterialTheme.colorScheme.primary
                                 )
                             }
                         }
                     }
+                }
 
-                    // Permissions
-                    item {
-                        Text(
-                            "Requested Permissions (${d.permissions.size})",
-                            style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold)
-                        )
+                Spacer(Modifier.height(12.dp))
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    OutlinedButton(
+                        onClick = {
+                            inspectingApp = null
+                            onNavigateToHex(targetApp.baseSourceDir)
+                        },
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Icon(Icons.Default.DataArray, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text("Hex View")
                     }
 
-                    items(d.permissions) { perm ->
-                        val isDangerous = perm.contains("CAMERA") || perm.contains("LOCATION") || perm.contains("STORAGE") || perm.contains("CONTACTS") || perm.contains("RECORD_AUDIO") || perm.contains("SMS")
-                        Surface(
-                            shape = RoundedCornerShape(8.dp),
-                            color = if (isDangerous) MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.4f) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f),
-                            modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp)
-                        ) {
-                            Text(
-                                text = perm.substringAfterLast("."),
-                                style = MaterialTheme.typography.bodySmall.copy(
-                                    fontFamily = FontFamily.Monospace,
-                                    fontWeight = if (isDangerous) FontWeight.Bold else FontWeight.Normal,
-                                    color = if (isDangerous) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface
-                                ),
-                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
-                            )
-                        }
+                    Button(
+                        onClick = {
+                            val target = targetApp
+                            inspectingApp = null
+                            startExtraction(target, null)
+                        },
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text("Extract APK")
                     }
                 }
 
-                item {
-                    Spacer(Modifier.height(24.dp))
-                }
+                Spacer(Modifier.height(16.dp))
             }
         }
     }
 }
 
-private suspend fun extractApk(
+private suspend fun extractRawSplits(
     context: Context,
     app: ApkItem,
-    safUri: String?,
-    scope: kotlinx.coroutines.CoroutineScope,
-    setExtracting: (String?) -> Unit,
-    setProgress: (Float?) -> Unit
-) {
-    setExtracting(app.packageName)
-    setProgress(0f)
+    baseApk: File,
+    splits: List<File>,
+    onProgress: (ExtractionProgressState) -> Unit
+): ExtractionResult = withContext(Dispatchers.IO) {
+    val outDir = File(ApkProcessor.getExportDirectory(context), "${ApkProcessor.sanitizeFileName(app.name)}_splits")
+    outDir.mkdirs()
 
-    withContext(Dispatchers.IO) {
-        try {
-            val filesToExtract = mutableListOf<File>()
-            filesToExtract.add(File(app.baseSourceDir))
-            app.splitSourceDirs?.forEach { filesToExtract.add(File(it)) }
+    val all = listOf(baseApk) + splits
+    val totalBytes = all.sumOf { it.length() }
+    var copied = 0L
 
-            var totalBytesToCopy = app.totalSize
-            var bytesCopied = 0L
-
-            val savedUris = mutableListOf<Uri>()
-            val resolver = context.contentResolver
-
-            for (file in filesToExtract) {
-                val isBase = file.absolutePath == app.baseSourceDir
-                val suffix = if (isBase) "base" else file.name
-                val fileName = "${app.packageName}_${app.versionCode}_$suffix.apk"
-
-                var outUri: Uri? = null
-                var outputStream: java.io.OutputStream? = null
-
-                if (!safUri.isNullOrEmpty()) {
-                    val dir = DocumentFile.fromTreeUri(context, Uri.parse(safUri))
-                    if (dir != null) {
-                        val existing = dir.findFile(fileName)
-                        existing?.delete()
-                        val newFile = dir.createFile("application/vnd.android.package-archive", fileName)
-                        if (newFile != null) {
-                            outUri = newFile.uri
-                            outputStream = resolver.openOutputStream(outUri)
-                        } else {
-                            throw Exception("Failed to create file in SAF directory")
-                        }
-                    } else {
-                        throw Exception("Export directory not found or permission denied")
-                    }
-                } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                    val contentValues = ContentValues().apply {
-                        put(MediaStore.MediaColumns.DISPLAY_NAME, fileName)
-                        put(MediaStore.MediaColumns.MIME_TYPE, "application/vnd.android.package-archive")
-                        put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/DevVault")
-                    }
-                    outUri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, contentValues)
-                    if (outUri != null) {
-                        outputStream = resolver.openOutputStream(outUri)
-                    } else {
-                        throw Exception("Failed to create MediaStore entry")
-                    }
-                } else {
-                    throw Exception("No valid export location")
+    for (file in all) {
+        val destName = if (file == baseApk) "base.apk" else file.name
+        val destFile = File(outDir, destName)
+        file.inputStream().buffered(65536).use { input ->
+            destFile.outputStream().buffered(65536).use { output ->
+                val buf = ByteArray(65536)
+                var r: Int
+                while (input.read(buf).also { r = it } != -1) {
+                    output.write(buf, 0, r)
+                    copied += r
+                    onProgress(
+                        ExtractionProgressState(
+                            isActive = true,
+                            appName = app.name,
+                            stage = "Copying raw split...",
+                            currentFile = destName,
+                            progress = copied.toFloat() / totalBytes,
+                            bytesProcessed = copied,
+                            totalBytes = totalBytes
+                        )
+                    )
                 }
-
-                if (outputStream == null) throw Exception("Could not open output stream")
-
-                file.inputStream().use { input ->
-                    outputStream.use { out ->
-                        val buffer = ByteArray(8192)
-                        var read: Int
-                        while (input.read(buffer).also { read = it } != -1) {
-                            out.write(buffer, 0, read)
-                            bytesCopied += read
-                            withContext(Dispatchers.Main) {
-                                setProgress(bytesCopied.toFloat() / totalBytesToCopy.toFloat())
-                            }
-                        }
-                    }
-                }
-
-                if (outUri != null) {
-                    savedUris.add(outUri)
-                }
-            }
-
-            withContext(Dispatchers.Main) {
-                val pathMsg = if (!safUri.isNullOrEmpty()) "Export Folder" else "Downloads/DevVault"
-                Toast.makeText(context, "Extracted ${savedUris.size} file(s) to $pathMsg", Toast.LENGTH_LONG).show()
-                if (savedUris.size == 1) {
-                    val intent = Intent(Intent.ACTION_SEND).apply {
-                        type = "application/vnd.android.package-archive"
-                        putExtra(Intent.EXTRA_STREAM, savedUris.first())
-                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                    }
-                    context.startActivity(Intent.createChooser(intent, "Share APK"))
-                }
-            }
-        } catch (e: Exception) {
-            e.printStackTrace()
-            withContext(Dispatchers.Main) {
-                Toast.makeText(context, "Failed: ${e.message}", Toast.LENGTH_LONG).show()
-            }
-        } finally {
-            withContext(Dispatchers.Main) {
-                setExtracting(null)
-                setProgress(null)
             }
         }
+    }
+
+    ExtractionResult(
+        outputFile = outDir,
+        appName = app.name,
+        packageName = app.packageName,
+        versionName = app.versionName,
+        isSplitBundle = true,
+        isUniversalApk = false,
+        sizeBytes = totalBytes,
+        componentCount = all.size
+    )
+}
+
+private fun shareApkFile(context: Context, file: File) {
+    try {
+        val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
+        val intent = Intent(Intent.ACTION_SEND).apply {
+            type = "application/vnd.android.package-archive"
+            putExtra(Intent.EXTRA_STREAM, uri)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        context.startActivity(Intent.createChooser(intent, "Share APK"))
+    } catch (e: Exception) {
+        Toast.makeText(context, "Share error: ${e.message}", Toast.LENGTH_SHORT).show()
+    }
+}
+
+private fun getFileName(context: Context, uri: Uri): String {
+    var result: String? = null
+    if (uri.scheme == "content") {
+        val cursor = context.contentResolver.query(uri, null, null, null, null)
+        cursor?.use {
+            if (it.moveToFirst()) {
+                val index = it.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+                if (index >= 0) result = it.getString(index)
+            }
+        }
+    }
+    if (result == null) {
+        result = uri.path
+        val cut = result?.lastIndexOf('/')
+        if (cut != null && cut != -1) {
+            result = result?.substring(cut + 1)
+        }
+    }
+    return result ?: "package.apk"
+}
+
+@Composable
+private fun InfoSectionHeader(title: String) {
+    Text(
+        text = title,
+        style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
+        color = MaterialTheme.colorScheme.primary,
+        modifier = Modifier.padding(top = 8.dp, bottom = 4.dp)
+    )
+}
+
+@Composable
+private fun CopyableHashRow(label: String, value: String, context: Context) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable {
+                val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                clipboard.setPrimaryClip(ClipData.newPlainText(label, value))
+                Toast.makeText(context, "$label copied to clipboard", Toast.LENGTH_SHORT).show()
+            }
+            .padding(vertical = 2.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(label, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.outline)
+            Text(value, style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace), maxLines = 1)
+        }
+        Icon(
+            imageVector = Icons.Default.ContentCopy,
+            contentDescription = "Copy",
+            modifier = Modifier.size(16.dp),
+            tint = MaterialTheme.colorScheme.outline
+        )
     }
 }

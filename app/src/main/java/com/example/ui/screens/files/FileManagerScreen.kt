@@ -7,6 +7,8 @@ import android.os.Build
 import android.os.Environment
 import android.provider.Settings
 import android.widget.Toast
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -89,6 +91,10 @@ fun FileManagerScreen(
     var viewerZipFile by remember { mutableStateOf<File?>(null) }
     var propertiesFile by remember { mutableStateOf<File?>(null) }
     var fileActionTarget by remember { mutableStateOf<File?>(null) }
+    var apkActionTarget by remember { mutableStateOf<File?>(null) }
+    var apkViewingDetails by remember { mutableStateOf<com.example.ui.screens.apk.ApkPackageDetails?>(null) }
+    var apkProgressState by remember { mutableStateOf(com.example.ui.screens.apk.ExtractionProgressState()) }
+    var apkCompletedResult by remember { mutableStateOf<com.example.ui.screens.apk.ExtractionResult?>(null) }
 
     var showAnalyticsSheet by remember { mutableStateOf(false) }
     var showSearchFilterDialog by remember { mutableStateOf(false) }
@@ -205,7 +211,7 @@ fun FileManagerScreen(
                 FileType.PDF -> viewerPdfFile = file
                 FileType.ARCHIVE -> viewerZipFile = file
                 FileType.CODE, FileType.TEXT -> onNavigateToEditor(file.absolutePath)
-                FileType.APK -> fileActionTarget = file
+                FileType.APK -> apkActionTarget = file
                 FileType.DOCUMENT -> openWithExternalApp(file)
                 FileType.UNKNOWN -> {
                     // For files under 1MB, open in the code/text editor for viewing
@@ -910,6 +916,14 @@ fun FileManagerScreen(
                     fileActionTarget = null
                     propertiesFile = target
                 }
+                val isApkFamily = file.extension.lowercase() in setOf("apk", "apks", "xapk", "apkm")
+                if (isApkFamily) {
+                    ActionMenuItem("APK Tools (Install, View, Convert)", Icons.Default.Android, textColor = MaterialTheme.colorScheme.primary) {
+                        val target = file
+                        fileActionTarget = null
+                        apkActionTarget = target
+                    }
+                }
                 ActionMenuItem("Delete", Icons.Default.Delete, textColor = MaterialTheme.colorScheme.error) {
                     val target = file
                     fileActionTarget = null
@@ -923,6 +937,172 @@ fun FileManagerScreen(
     // ==========================================
     // ALL DIALOGS (VIEWERS, RENAMES, ETC.)
     // ==========================================
+
+    // APK Package Action Dialog
+    apkActionTarget?.let { file ->
+        com.example.ui.screens.apk.ApkActionDialog(
+            file = file,
+            onDismiss = { apkActionTarget = null },
+            onInstall = { targetFile ->
+                scope.launch {
+                    com.example.ui.screens.apk.ApkProcessor.installPackage(
+                        context = context,
+                        file = targetFile,
+                        onSuccess = { Toast.makeText(context, it, Toast.LENGTH_SHORT).show() },
+                        onError = { Toast.makeText(context, it, Toast.LENGTH_LONG).show() }
+                    )
+                }
+            },
+            onViewComponents = { targetFile ->
+                scope.launch(Dispatchers.IO) {
+                    val details = com.example.ui.screens.apk.ApkProcessor.inspectApkFile(context, targetFile)
+                    withContext(Dispatchers.Main) {
+                        apkViewingDetails = details
+                    }
+                }
+            },
+            onConvertToApk = { targetFile ->
+                scope.launch {
+                    try {
+                        apkProgressState = com.example.ui.screens.apk.ExtractionProgressState(
+                            isActive = true,
+                            appName = targetFile.nameWithoutExtension,
+                            stage = "Merging bundle into Universal APK...",
+                            currentFile = targetFile.name
+                        )
+                        val res = com.example.ui.screens.apk.ApkProcessor.convertBundleToUniversalApk(
+                            context = context,
+                            bundleFile = targetFile,
+                            onProgress = { apkProgressState = it }
+                        )
+                        apkCompletedResult = res
+                        apkProgressState = com.example.ui.screens.apk.ExtractionProgressState(isActive = false)
+                    } catch (e: Exception) {
+                        apkProgressState = com.example.ui.screens.apk.ExtractionProgressState(isActive = false, error = e.message)
+                        Toast.makeText(context, "Conversion failed: ${e.message}", Toast.LENGTH_LONG).show()
+                    }
+                }
+            },
+            onExtractSplits = { targetFile ->
+                scope.launch(Dispatchers.IO) {
+                    try {
+                        val outDir = File(targetFile.parentFile ?: context.filesDir, "${targetFile.nameWithoutExtension}_splits")
+                        outDir.mkdirs()
+                        java.util.zip.ZipFile(targetFile).use { zip ->
+                            val entries = zip.entries()
+                            while (entries.hasMoreElements()) {
+                                val entry = entries.nextElement()
+                                if (!entry.isDirectory && entry.name.endsWith(".apk", ignoreCase = true)) {
+                                    val dest = File(outDir, entry.name.substringAfterLast('/'))
+                                    zip.getInputStream(entry).use { input ->
+                                        dest.outputStream().use { output -> input.copyTo(output) }
+                                    }
+                                }
+                            }
+                        }
+                        withContext(Dispatchers.Main) {
+                            Toast.makeText(context, "Extracted to: ${outDir.name}", Toast.LENGTH_LONG).show()
+                            viewModel.refresh()
+                        }
+                    } catch (e: Exception) {
+                        withContext(Dispatchers.Main) {
+                            Toast.makeText(context, "Extract error: ${e.message}", Toast.LENGTH_LONG).show()
+                        }
+                    }
+                }
+            },
+            onProperties = { targetFile ->
+                propertiesFile = targetFile
+            },
+            onShare = { targetFile ->
+                shareFiles(listOf(targetFile))
+            }
+        )
+    }
+
+    // APK Components Viewer Dialog
+    apkViewingDetails?.let { details ->
+        com.example.ui.screens.apk.ApkComponentsViewerDialog(
+            details = details,
+            onDismiss = { apkViewingDetails = null },
+            onInstall = {
+                File(details.mainApkPath).takeIf { it.exists() }?.let { apkFile ->
+                    scope.launch {
+                        com.example.ui.screens.apk.ApkProcessor.installPackage(
+                            context = context,
+                            file = apkFile,
+                            onSuccess = { Toast.makeText(context, it, Toast.LENGTH_SHORT).show() },
+                            onError = { Toast.makeText(context, it, Toast.LENGTH_LONG).show() }
+                        )
+                    }
+                }
+            },
+            onConvertToUniversal = {
+                File(details.mainApkPath).takeIf { it.exists() }?.let { bundleFile ->
+                    scope.launch {
+                        try {
+                            apkProgressState = com.example.ui.screens.apk.ExtractionProgressState(
+                                isActive = true,
+                                appName = details.appName,
+                                stage = "Merging bundle into Universal APK...",
+                                currentFile = bundleFile.name
+                            )
+                            val res = com.example.ui.screens.apk.ApkProcessor.convertBundleToUniversalApk(
+                                context = context,
+                                bundleFile = bundleFile,
+                                onProgress = { apkProgressState = it }
+                            )
+                            apkCompletedResult = res
+                            apkProgressState = com.example.ui.screens.apk.ExtractionProgressState(isActive = false)
+                            viewModel.refresh()
+                        } catch (e: Exception) {
+                            apkProgressState = com.example.ui.screens.apk.ExtractionProgressState(isActive = false, error = e.message)
+                            Toast.makeText(context, "Conversion failed: ${e.message}", Toast.LENGTH_LONG).show()
+                        }
+                    }
+                }
+            }
+        )
+    }
+
+    // APK Extraction & Conversion Progress Dialog
+    if (apkProgressState.isActive || apkCompletedResult != null) {
+        com.example.ui.screens.apk.ApkExtractionProgressDialog(
+            progressState = apkProgressState,
+            completedResult = apkCompletedResult,
+            onCancel = {
+                apkProgressState = com.example.ui.screens.apk.ExtractionProgressState(isActive = false, isCancelled = true)
+            },
+            onDismissCompleted = {
+                apkCompletedResult = null
+                viewModel.refresh()
+            },
+            onInstall = { file ->
+                scope.launch {
+                    com.example.ui.screens.apk.ApkProcessor.installPackage(
+                        context = context,
+                        file = file,
+                        onSuccess = { Toast.makeText(context, it, Toast.LENGTH_SHORT).show() },
+                        onError = { Toast.makeText(context, it, Toast.LENGTH_LONG).show() }
+                    )
+                }
+            },
+            onShare = { file ->
+                shareFiles(listOf(file))
+            },
+            onViewComponents = { file ->
+                scope.launch(Dispatchers.IO) {
+                    val details = com.example.ui.screens.apk.ApkProcessor.inspectApkFile(context, file)
+                    withContext(Dispatchers.Main) {
+                        apkViewingDetails = details
+                    }
+                }
+            },
+            onOpenFolder = { file ->
+                file.parentFile?.let { viewModel.navigateTo(it) }
+            }
+        )
+    }
 
     // Image Viewer
     viewerImageFile?.let { file ->
@@ -1366,7 +1546,7 @@ private fun FileListItem(
                 overflow = TextOverflow.Ellipsis
             )
             Spacer(Modifier.height(2.dp))
-            val sizeStr = if (file.isDirectory) "${file.listFiles()?.size ?: 0} items" else FileUtils.formatSize(context, file.length())
+            val sizeStr = if (file.isDirectory) "Folder" else FileUtils.formatSize(context, file.length())
             val dateStr = SimpleDateFormat("MMM dd, yyyy", Locale.getDefault()).format(Date(file.lastModified()))
             Text(
                 text = "$dateStr • $sizeStr",
@@ -1475,7 +1655,7 @@ private fun FileGridItem(
                 overflow = TextOverflow.Ellipsis,
                 textAlign = TextAlign.Center
             )
-            val sizeStr = if (file.isDirectory) "${file.listFiles()?.size ?: 0} items" else FileUtils.formatSize(context, file.length())
+            val sizeStr = if (file.isDirectory) "Folder" else FileUtils.formatSize(context, file.length())
             Text(
                 sizeStr,
                 style = MaterialTheme.typography.labelSmall,

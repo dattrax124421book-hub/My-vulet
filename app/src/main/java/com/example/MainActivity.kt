@@ -191,7 +191,11 @@ fun DevVaultApp() {
             WebShareScreen(onBack = { navController.popBackStack() })
         }
         composable("apk_tools") { 
-            ApkToolsScreen(onBack = { navController.popBackStack() }) 
+            ApkToolsScreen(
+                onBack = { navController.popBackStack() },
+                onNavigateToHex = { path -> navController.navigate("hex_viewer?filePath=${android.net.Uri.encode(path)}") },
+                onOpenFileManager = { _ -> navController.navigate("file_manager") }
+            ) 
         }
         composable("apps") { 
             AppsScreen(onBack = { navController.popBackStack() }) 
