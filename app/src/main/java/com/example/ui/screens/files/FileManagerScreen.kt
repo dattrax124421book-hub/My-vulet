@@ -54,6 +54,10 @@ fun FileManagerScreen(
     onBack: () -> Unit,
     rootDir: File,
     onNavigateToEditor: (String) -> Unit = {},
+    onNavigateToHex: (String) -> Unit = {},
+    onNavigateToHash: (String) -> Unit = {},
+    onNavigateToRenamer: (List<String>) -> Unit = {},
+    onNavigateToWebShare: () -> Unit = {},
     viewModel: FileManagerViewModel = viewModel(),
     vaultViewModel: VaultViewModel = viewModel()
 ) {
@@ -265,6 +269,16 @@ fun FileManagerScreen(
                                 onClick = {
                                     showSelectMenu = false
                                     showZipCreateDialog = true
+                                }
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Batch Rename") },
+                                leadingIcon = { Icon(Icons.Default.DriveFileRenameOutline, null) },
+                                onClick = {
+                                    showSelectMenu = false
+                                    val paths = selectedFiles.map { it.absolutePath }
+                                    viewModel.clearSelection()
+                                    onNavigateToRenamer(paths)
                                 }
                             )
                             DropdownMenuItem(
@@ -836,6 +850,16 @@ fun FileManagerScreen(
                     ActionMenuItem("Open as Text in Code Editor", Icons.Default.Code) {
                         fileActionTarget = null
                         onNavigateToEditor(file.absolutePath)
+                    }
+                    ActionMenuItem("Open in Hex & Binary Viewer", Icons.Default.DataArray) {
+                        val target = file
+                        fileActionTarget = null
+                        onNavigateToHex(target.absolutePath)
+                    }
+                    ActionMenuItem("Calculate Hash (MD5 / SHA-256)", Icons.Default.Calculate) {
+                        val target = file
+                        fileActionTarget = null
+                        onNavigateToHash(target.absolutePath)
                     }
                 }
                 ActionMenuItem("Copy", Icons.Default.ContentCopy) {
